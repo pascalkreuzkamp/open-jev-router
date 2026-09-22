@@ -37,8 +37,27 @@ if (status?.manual) {
     status.reason !== "jev" &&
     status.reason !== "jev/no-change" &&
     !status.reason.includes("override");
-  const why = held ? ` ${DIM}(${status.reason.split("/")[0]})${RESET}` : "";
-  routed = `${color}${status.model ?? status.tier}${effort}${RESET}${p}${why}`;
+  const why = held ? ` ${DIM}(${status.fallbackReason ?? status.reason.split("/")[0]})${RESET}` : "";
+  const actor = status.actorType === "subagent"
+    ? `subagent${status.actorName ? `:${status.actorName}` : ""} `
+    : "main ";
+  const recent = (status.history ?? []).filter(({ manual }) => !manual);
+  const counts = new Map();
+  for (const entry of recent) {
+    const key = entry.tier ?? entry.model ?? "?";
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const distribution = [...counts]
+    .map(([key, count]) => `${key.slice(0, 1).toUpperCase()} ${Math.round((count / recent.length) * 100)}%`)
+    .join("/");
+  const shares = distribution ? ` ${DIM}· ${distribution}${RESET}` : "";
+  const main = status.actorType === "subagent"
+    ? [...recent].reverse().find(({ actorType }) => actorType === "main")
+    : null;
+  const mainRoute = main
+    ? ` ${DIM}· main ${main.model ?? main.tier ?? "unknown"}${main.effectiveEffort ? `/${main.effectiveEffort}` : ""}${RESET}`
+    : "";
+  routed = `${actor}${color}${status.model ?? status.tier}${effort}${RESET}${p}${why}${mainRoute}${shares}`;
 }
 
 process.stdout.write(`${routed} ${DIM}·${RESET} ${dir} ${DIM}· ${pct}% context${RESET}\n`);

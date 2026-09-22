@@ -51,6 +51,48 @@ test("shows the concrete provider model when available", () => {
   );
 });
 
+test("separates actor, recommendation, effective route, and upstream outcome", () => {
+  const output = formatExplanation({
+    actorType: "subagent",
+    actorName: "Explore",
+    actorId: "a_2f9",
+    parentActorId: "main",
+    requestClassification: "subagent_fresh",
+    provider: "openrouter",
+    resolvedModel: "typesafe/jev-1.13",
+    decisionId: "dec_1",
+    latencyMs: 41,
+    cost: 0.000014,
+    recommendedProfile: "haiku-default",
+    requestedEffort: "default",
+    model: "claude-haiku-4-5",
+    effectiveEffort: "default",
+    confidence: null,
+    source: "fallback",
+    fallbackReason: "provider_timeout",
+    upstreamOutcome: { success: false, httpStatus: 502, model: "claude-haiku-4-5" },
+  });
+  assert.match(output, /Type: subagent/);
+  assert.match(output, /Name: Explore/);
+  assert.match(output, /Classification: subagent_fresh/);
+  assert.match(output, /Provider: openrouter/);
+  assert.match(output, /Profile: haiku-default/);
+  assert.match(output, /Confidence: n\/a/);
+  assert.match(output, /Decision source: fallback/);
+  assert.match(output, /Fallback: provider_timeout/);
+  assert.match(output, /Status: failed/);
+  assert.match(output, /HTTP: 502/);
+});
+
+test("legacy and manual status records remain readable", () => {
+  assert.doesNotThrow(() => formatExplanation({ tier: "sonnet", reason: "jev" }));
+  assert.match(
+    formatExplanation({ manual: true, model: "claude-opus-5" }),
+    /manual model claude-opus-5/,
+  );
+});
+
+
 test("Claude skill pre-approves its read-only explanation command", () => {
   const skill = readFileSync(new URL("../.claude/skills/jev-explain/SKILL.md", import.meta.url), "utf8");
   assert.match(skill, /^allowed-tools: Bash\(node \*\)$/m);

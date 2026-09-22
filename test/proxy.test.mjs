@@ -22,7 +22,7 @@ test("the sentinel is not mistaken for a real tier", () => {
   assert.equal(tierOf("jev-router"), null);
 });
 import { tierOf, isAuto } from "../src/config.mjs";
-import { writeDecision, writeStatus, readStatus, pruneStale, STATUS_DIR } from "../src/status.mjs";
+import { writeDecision, writeDecisionOutcome, writeStatus, readStatus, pruneStale, STATUS_DIR } from "../src/status.mjs";
 import { mkdirSync, statSync, utimesSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -68,6 +68,24 @@ test("routing status retains recent decisions by history order", () => {
   const status = readStatus(sid);
   assert.equal(status.tier, "sonnet");
   assert.deepEqual(status.history.map(({ tier }) => tier), ["haiku", "sonnet"]);
+});
+
+test("an upstream outcome updates only the matching latest stored decision", () => {
+  const sid = `outcome-${process.pid}`;
+  writeDecision(sid, { routeId: "r1", tier: "sonnet" });
+  writeDecisionOutcome(sid, "other", { success: false });
+  assert.equal(readStatus(sid).upstreamOutcome, undefined);
+  writeDecisionOutcome(sid, "r1", { success: true, httpStatus: 200 });
+  const status = readStatus(sid);
+  assert.deepEqual(status.upstreamOutcome, { success: true, httpStatus: 200 });
+  assert.deepEqual(status.history[0].upstreamOutcome, { success: true, httpStatus: 200 });
+
+  writeDecision(sid, { routeId: "r2", tier: "opus" });
+  writeDecisionOutcome(sid, "r1", { success: false, httpStatus: 500 });
+  const newer = readStatus(sid);
+  assert.equal(newer.routeId, "r2", "an older completion does not replace the latest actor");
+  assert.equal(newer.upstreamOutcome, undefined);
+  assert.equal(newer.history[0].upstreamOutcome.httpStatus, 500);
 });
 
 test("recognises older model versions within a tier", () => {
@@ -188,6 +206,8 @@ test("a routed request without metadata is recorded under the conversation key",
   assert.ok(status, "the decision is filed under the conversation key instead of being dropped");
   assert.equal(status.tier, "sonnet");
   assert.equal(status.confidence, 0.77);
+  assert.equal(status.upstreamOutcome.success, true);
+  assert.equal(status.upstreamOutcome.httpStatus, 200);
 });
 
 test("a secret-bearing prompt reaches neither the debug log nor the persisted decision", async (t) => {
