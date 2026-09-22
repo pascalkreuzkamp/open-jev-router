@@ -17,6 +17,7 @@ import {
 } from "../src/ui/reports.mjs";
 import { daemonStatus, startDaemon, stopDaemon } from "../src/daemon/control.mjs";
 import { loadCredentialFiles } from "../src/credentials.mjs";
+import { formatDoctor, runDoctor } from "../src/vscode/doctor.mjs";
 
 const HELP = `Usage:
   jev stats [--session current|<id>] [--project <path>] [--json]
@@ -24,9 +25,11 @@ const HELP = `Usage:
   jev daemon start [--json]
   jev daemon status [--json]
   jev daemon stop [--json]
+  jev vscode doctor [--json]
 
 Stats and routes read local telemetry only and never contact Jev or an upstream model.
-Daemon mode runs the same routing engine as jev-claude on a private loopback port. Claude
+Daemon mode runs the same routing engine as jev-claude on a private loopback port. The
+VS Code doctor only reads settings and suggests entries; it never writes them. Claude
 token counts describe subscription usage; routing cost is actual Jev-provider cost.`;
 
 export function parseArgs(argv) {
@@ -34,8 +37,15 @@ export function parseArgs(argv) {
   if (!command || command === "help" || command === "--help" || command === "-h") {
     return { help: true };
   }
-  if (!new Set(["stats", "routes", "daemon"]).has(command)) {
+  if (!new Set(["stats", "routes", "daemon", "vscode"]).has(command)) {
     return { error: `unknown command: ${command}` };
+  }
+  if (command === "vscode") {
+    const [action, ...options] = rest;
+    if (action !== "doctor") return { error: "vscode requires doctor" };
+    const unknown = options.find((option) => option !== "--json");
+    if (unknown) return { error: `unknown option: ${unknown}` };
+    return { command, action, json: options.includes("--json") };
   }
   if (command === "daemon") {
     const [action, ...options] = rest;
@@ -77,6 +87,13 @@ export async function run(argv, { env = process.env, cwd = process.cwd() } = {})
   if (args.help) return { exitCode: 0, stdout: `${HELP}\n` };
   if (args.error) return { exitCode: 2, stderr: `${args.error}\n\n${HELP}\n` };
   if (args.command === "daemon") return runDaemon(args, env);
+  if (args.command === "vscode") {
+    const report = await runDoctor({ env });
+    const exitCode = report.ok ? 0 : 1;
+    return args.json
+      ? { exitCode, stdout: `${JSON.stringify(report)}\n` }
+      : { exitCode, stdout: `${formatDoctor(report)}\n` };
+  }
 
   const db = openReader({ env });
   if (!db) {

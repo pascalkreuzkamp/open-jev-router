@@ -232,10 +232,32 @@ signal a process. `jev daemon stop` first verifies the loopback health response,
 instance id, then asks the verified daemon to drain in-flight requests and flush telemetry.
 
 `GET /health` returns only operational fields: router version, instance identity, PID,
-provider name, whether a provider key is available, and telemetry status. No credentials or
+provider name, whether a provider key is available, telemetry status, and counts of
+forwarded message requests. No credentials or
 prompt content are returned. Shared daemon state requires a Claude session id; a client that
 does not provide reliable session identity is forwarded conservatively without creating a
 reusable route pin. This keeps simultaneous clients and projects from sharing routing state.
+
+### VS Code
+
+The Claude Code VS Code extension can use the daemon, but this is **experimental**; see
+[docs/vscode-compatibility.md](docs/vscode-compatibility.md). The reliable option is
+`jev-claude` in the integrated terminal.
+
+```bash
+jev daemon start
+jev vscode doctor          # checks VS Code, the extension, the daemon, and your settings
+jev-code .                 # or: open VS Code pointed at the daemon
+```
+
+`jev vscode doctor` never writes settings. It prints the entries to add to
+`claudeCode.environmentVariables` (at least `ANTHROPIC_BASE_URL` and the **Jev Router** picker
+row), names any other entries you already have without showing their values, and reports
+`Routing: observed` only once the daemon has actually forwarded a request. `jev-code` starts
+or reuses the daemon and opens `code` with the same environment; a VS Code process that is
+already running keeps its old environment. Set `JEV_PROXY_PORT` so settings keep naming the
+right port, `JEV_VSCODE_BIN` to use another `code` command, and `JEV_VSCODE_SETTINGS` to check
+a different settings file.
 
 ## Jev provider
 
@@ -440,6 +462,8 @@ numeric data is `null`, not zero. Errors are JSON objects with `ok: false`, `cod
 | `JEV_ENABLE_TELEMETRY` | Claude | Records routes and usage to a local SQLite database. Off by default. |
 | `JEV_DATA_DIR` | Claude | Directory for the telemetry database; defaults to `~/.jev-router`. |
 | `JEV_PROXY_PORT` | Claude daemon | Exact loopback port for `jev daemon start`. An occupied or invalid explicit port fails startup. Unset uses the last successful port when available, then an OS-assigned port. |
+| `JEV_VSCODE_BIN` | VS Code | `code` command used by `jev-code` and `jev vscode doctor` (default `code`). |
+| `JEV_VSCODE_SETTINGS` | VS Code | Settings file `jev vscode doctor` reads (default: VS Code's user settings). |
 | `JEV_TELEMETRY_RETENTION_DAYS` | Claude | Days of ended sessions to keep; defaults to `90`. An invalid value falls back to the default rather than keeping data forever. |
 | `JEV_NO_STATUSLINE` | Claude | Disables the injected Claude status line. |
 | `JEV_CODEX_FAST_MODEL` | Codex | Fast model; defaults to `gpt-5.6-luna`. |

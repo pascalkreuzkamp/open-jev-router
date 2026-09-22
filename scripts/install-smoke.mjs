@@ -128,6 +128,31 @@ try {
       return "actionable message";
     }
   });
+
+  check("jev-code reports a missing VS Code CLI rather than crashing", () => {
+    try {
+      run("jev-code", [], { PATH: nodeOnlyPath });
+      throw new Error("expected a nonzero exit");
+    } catch (error) {
+      const text = `${error.stderr ?? ""}${error.stdout ?? ""}`;
+      if (!/`code` command is not on your PATH/.test(text)) throw new Error(`unexpected output: ${text.trim()}`);
+      return "actionable message";
+    }
+  });
+
+  check("jev vscode doctor runs from the installed package", () => {
+    // Exits 1 when a check fails (no extension here), so the report is read either way.
+    const env = { PATH: nodeOnlyPath, HOME: workspace, USERPROFILE: workspace, JEV_DATA_DIR: join(workspace, "data") };
+    let out;
+    try {
+      out = run("jev", ["vscode", "doctor", "--json"], env);
+    } catch (error) {
+      out = error.stdout;
+    }
+    const report = JSON.parse(out || "{}");
+    if (!Array.isArray(report.checks)) throw new Error("no checks in the report");
+    return `${report.checks.length} checks, routing ${report.routing}`;
+  });
 } finally {
   rmSync(tarball, { force: true });
   rmSync(workspace, { recursive: true, force: true });

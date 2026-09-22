@@ -205,6 +205,10 @@ export async function startProxy({
   // Set once the account refuses a routed Fable request (no extra usage credit, or the model
   // is not enabled). From then on this proxy stops offering Fable and routes to Opus instead.
   let fableRefused = false;
+  // Messages requests this proxy has actually forwarded. A client configured to use the
+  // proxy proves nothing until a request arrives, so this is the evidence `jev vscode doctor`
+  // reports rather than the configuration alone. Counts only; no content is kept.
+  const traffic = { messages: 0, routed: 0, lastMessageAt: null };
   if (host !== "127.0.0.1" && host !== "::1") {
     throw new Error(`proxy host must be loopback, received ${host}`);
   }
@@ -258,6 +262,10 @@ export async function startProxy({
       };
       const observesMessages = /^\/v1\/messages/.test(req.url ?? "");
       const recordsTelemetry = telemetry.enabled && observesMessages;
+      if (observesMessages && req.method === "POST") {
+        traffic.messages += 1;
+        traffic.lastMessageAt = new Date().toISOString();
+      }
       let telemetryFinished = false;
 
       async function recordOutcome({ observer = null, responseBytes = 0, httpStatus = null }) {
@@ -369,6 +377,7 @@ export async function startProxy({
             debug(`${key} unknown request, preserved without routing`);
           } else {
             const actor = detection.actor;
+            traffic.routed += 1;
             // What the prompt cache was built on, which is what a downgrade would discard.
             const current = actor.pinnedRoute?.legacyTier ?? "opus";
             const prompt = request.prompt;
@@ -700,6 +709,7 @@ export async function startProxy({
     port: server.address().port,
     host,
     telemetry,
+    traffic,
     close: ({ timeoutMs = 2000 } = {}) => {
       if (closePromise) return closePromise;
       closePromise = (async () => {
