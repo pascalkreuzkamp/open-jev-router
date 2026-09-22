@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-export const CLAUDE_ADAPTER_VERSION = "messages-v1/2026-09-22";
+export const CLAUDE_ADAPTER_VERSION = "messages-v2/2026-09-22";
 
 const SUGGESTION_PREFIX = /^\s*\[SUGGESTION MODE:/i;
 
@@ -78,7 +78,15 @@ export function inspectClaudeRequest(body) {
   const firstMessageFingerprint = firstText
     ? createHash("sha256").update(firstText).digest("hex")
     : null;
-  const last = messages.at(-1);
+  // Claude Code appends its system prompt as a trailing `role: "system"` message, after
+  // the user's text, so the literal last element is not the conversational tail. Captured
+  // live from Claude Code 2.1.278 on 2026-09-22: a genuine fresh turn arrived as
+  // [user, system], which the previous "last message must be user" rule read as an
+  // unrecognized boundary — so every real turn failed open and nothing was ever routed.
+  // Every synthetic fixture put the user message last, which is why no test caught it.
+  let tail = messages.length - 1;
+  while (tail >= 0 && messages[tail]?.role === "system") tail -= 1;
+  const last = messages[tail];
   const lastBlocks = Array.isArray(last?.content) ? last.content : [];
   const prompt = last?.role === "user" ? cleanPrompt(textOf(last.content)) || null : null;
   const hasTools = Array.isArray(body.tools) && body.tools.length > 0;

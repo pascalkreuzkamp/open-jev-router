@@ -92,20 +92,27 @@ const check = (description, ok, detail = null) => {
 
 check("claude exited cleanly", exitCode === 0, `exit ${exitCode}`);
 check("both subagents reported back", /ALPHA/.test(stdout) && /BETA/.test(stdout));
+// A main turn plus two subagents is three fresh boundaries. Counting only "more than one"
+// was wrong: Claude Code routes the main turn twice (it re-sends the opening request in a
+// second serialization), so `> 1` passes even when no subagent is routed at all. That is
+// exactly what happened on the first live run, and it reported a false success.
 check(
-  "more than one fresh boundary was routed, so subagents were decided independently",
-  decisions.length > 1,
-  `${decisions.length} decisions`,
+  "all three fresh boundaries were routed: the main turn and both subagents",
+  decisions.length >= 3,
+  `${decisions.length} decisions; fewer than 3 means subagents were not decided independently`,
 );
 check(
   "every decision resolved to a real model",
   decisions.every(({ answer }) => answer?.choice && answer.choice !== AUTO_MODEL),
 );
 
-// Recorded, not asserted: whether real Claude Code supplies actor correlation at all. A run
-// that routes correctly but shows no actor fields is a true and useful result — it means the
-// classifier's conservative fail-open path is what is carrying live traffic.
-const correlationSeen = decisions.length > 1;
+// Recorded, not asserted: whether real Claude Code supplies actor correlation at all.
+// Observed on 2026-09-22 against Claude Code 2.1.278: it does not. `metadata.user_id` carries
+// only device_id, account_uuid and session_id. With no actor_id the registry refuses to split
+// later roots by prompt text (a deliberate choice: two identical concurrent subagents would
+// collide), so subagent requests are not treated as fresh boundaries and are never routed
+// independently. A run recording fewer than three boundaries is reporting that reality.
+const correlationSeen = decisions.length >= 3;
 
 const total = reportCost({ name: NAME, costs: decisions.map(({ answer }) => answer?.cost ?? null) });
 writeEvidence(NAME, {

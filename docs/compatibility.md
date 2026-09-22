@@ -122,6 +122,22 @@ sets its environment for a child process, which the extension does not necessari
 **Supported:** running `jev-claude` in VS Code's integrated terminal, which is an ordinary
 CLI session.
 
+## The Jev model on OpenRouter
+
+OpenRouter publishes **no floating alias** for Jev. Verified live on 2026-09-22:
+`typesafe/jev-latest`, `typesafe/jev` and `typesafe/jev-1` all return HTTP 400 "Model ...
+does not exist". Because routing fails open, naming a model that does not exist produces no
+error a user would notice — only silently unrouted turns.
+
+The default is therefore `typesafe/jev-1.13`, the form used by the Decisions API reference
+itself. OpenRouter resolves it server-side to a dated build (`typesafe/jev-1.13-20260917` at
+the time of writing) and reports both in every decision, so `jev routes` shows the configured
+and the resolved model separately.
+
+Set `JEV_OPENROUTER_MODEL` to pin a dated build exactly, or to move to a newer minor line
+when one is published. If routing appears to do nothing, check `~/.jev-claude.log` with
+`JEV_DEBUG=1`: a non-existent model shows up there as `provider_error`.
+
 ## Verification status
 
 The automated suite runs against mocked upstreams and mocked routing on every pull request.
@@ -144,6 +160,5 @@ Specifically still unverified at the time of writing:
 - Real Claude Code actor correlation. Every automated assertion about main-versus-subagent
   identity uses synthetic correlation metadata, because no captured Claude Code request is
   known to carry actor fields. The classifier fails open when they are absent.
-- Real OpenRouter responses, the `typesafe/jev-latest` alias, and a real account's model
-  catalog and capability behaviour.
+- A real account's Claude model catalog and capability behaviour.
 - Any VS Code extension version.

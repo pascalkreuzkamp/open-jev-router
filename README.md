@@ -380,7 +380,7 @@ numeric data is `null`, not zero. Errors are JSON objects with `ok: false`, `cod
 | `JEV_API_KEY` | Both | Enables direct-TypeSafe routing. `TYPESAFE_API_KEY` also works. |
 | `OPENROUTER_API_KEY` | Both | Enables OpenRouter routing (preferred over a TypeSafe key when both are set and `JEV_PROVIDER` is unset). |
 | `JEV_PROVIDER` | Both | Forces `openrouter` or `typesafe`, instead of the automatic key-based preference. An unknown value or a missing key for the forced provider disables routing visibly rather than falling back to another key. |
-| `JEV_OPENROUTER_MODEL` | Both | Jev model alias requested from OpenRouter; defaults to `typesafe/jev-latest`. |
+| `JEV_OPENROUTER_MODEL` | Both | Jev model requested from OpenRouter; defaults to `typesafe/jev-1.13`, which OpenRouter resolves to a dated build. There is no floating `-latest` alias for Jev; naming one that does not exist disables routing silently. |
 | `JEV_TIMEOUT_MS` | Both | Total wall-clock deadline for one Jev decision (request plus any retry); defaults to `1500`. A routing outage never stalls the turn longer than this. |
 | `JEV_DECISION_MODE` | Claude | `profiles` (default) lets Jev choose a validated model/effort profile; `signals` maps the original model and normalized reasoning signals locally. |
 | `JEV_CONFIDENCE_LOW` / `JEV_CONFIDENCE_HIGH` | Claude | Confidence boundaries; default to `0.45` / `0.80`. |
@@ -462,7 +462,7 @@ migration, failure behaviour, rollback, and what remains unverified.
 - The user's fresh task text is sent to whichever Jev provider is active (TypeSafe directly,
   or OpenRouter) for the routing decision. Full tool output and repository contents are not
   sent by default; `jev-claude` prints this when routing starts.
-- The OpenRouter Decisions API is an alpha endpoint; its shape and the `typesafe/jev-latest`
+- The OpenRouter Decisions API is an alpha endpoint; its shape and the `typesafe/jev-1.13`
   alias have not been verified against a live account in this codebase, only against current
   published documentation. Treat OpenRouter routing as unverified until exercised with a real
   key.
