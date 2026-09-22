@@ -111,6 +111,7 @@ async function harness(t, { route, respond, path = null, telemetry = null } = {}
       }
       const reply = respond(JSON.parse(Buffer.concat(chunks)), sent.length);
       sent.push(reply);
+      if (reply.destroyBeforeHeaders) return res.destroy();
       res.writeHead(reply.status ?? 200, reply.headers);
       for (const chunk of reply.chunks) res.write(chunk);
       if (reply.destroy) {
@@ -394,6 +395,22 @@ test("an upstream error is recorded as a failed request without usage", needsDri
   assert.equal(stored.ok, 0);
 });
 
+test("a connection failure before response headers is recorded as a failed attempt", needsDriver, async (t) => {
+  const harnessed = await harness(t, {
+    route: async () => choose("opus-high"),
+    respond: () => ({ destroyBeforeHeaders: true }),
+  });
+  const response = await harnessed.send(
+    body({ actor: "main", type: "main", turn: "t1", prompt: "main task" }),
+  );
+  assert.equal(response.status, 502);
+
+  const db = await harnessed.read();
+  const stored = db.prepare("SELECT http_status s, success ok FROM inference_requests").get();
+  assert.equal(stored.s, 502);
+  assert.equal(stored.ok, 0);
+});
+
 test("telemetry stores a request hash and no prompt text by default", needsDriver, async (t) => {
   const secret = "deploy with token sk-ant-do-not-store-me";
   const harnessed = await harness(t, {
@@ -436,6 +453,29 @@ test("an unwritable telemetry database never affects forwarding", needsDriver, a
 
   await harnessed.telemetry.flush({ timeoutMs: 1500 });
   assert.equal(harnessed.telemetry.stats().failed, true, "the failure is visible in the counters");
+});
+
+test("a disk-full writer drops telemetry but never affects forwarding", needsDriver, async (t) => {
+  const recorder = createRecorder({
+    env: { JEV_ENABLE_TELEMETRY: "1" },
+    path: ":memory:",
+    workerURL: new URL("../fixtures/telemetry/full-worker.mjs", import.meta.url),
+  });
+  const telemetry = createTelemetry({ recorder, routerVersion: "test" });
+  const harnessed = await harness(t, {
+    telemetry,
+    route: async () => choose("opus-high"),
+    respond: () => streamReply({ input: 12, output: 34 }),
+  });
+
+  const response = await harnessed.send(
+    body({ actor: "main", type: "main", turn: "t1", prompt: "main task" }),
+  );
+  assert.equal(response.status, 200);
+  assert.ok((await response.text()).includes("message_stop"));
+  await telemetry.flush();
+  assert.ok(telemetry.stats().rejected >= 5, "each lost telemetry event is counted");
+  assert.equal(telemetry.stats().failed, false, "a full disk does not disable routing");
 });
 
 test("with telemetry disabled nothing is written and routing is unchanged", async (t) => {
@@ -580,6 +620,21 @@ test("telemetry survives a restart and keeps both sessions' data", needsDriver, 
   const totals = usageTotals(db, {});
   assert.equal(totals.inputTokens, 300, "both runs' usage is present");
   assert.equal(db.pragma("user_version", { simple: true }), 1);
+});
+
+test("closing the proxy marks observed sessions ended so retention can expire them", needsDriver, async (t) => {
+  const harnessed = await harness(t, {
+    route: async () => choose("opus-high"),
+    respond: () => streamReply({ input: 5, output: 5 }),
+  });
+  await harnessed.send(body({ actor: "main", type: "main", turn: "t1", prompt: "main task" }));
+
+  await harnessed.telemetry.close();
+  const db = openReader({ path: harnessed.dbPath });
+  t.after(() => db?.close());
+  const session = db.prepare("SELECT started_at startedAt, ended_at endedAt FROM sessions").get();
+  assert.equal(typeof session.endedAt, "number");
+  assert.ok(session.endedAt >= session.startedAt);
 });
 
 test("a locked database never delays or breaks forwarding", needsDriver, async (t) => {

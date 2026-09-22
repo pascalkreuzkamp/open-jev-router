@@ -153,6 +153,14 @@ export function createTelemetry({
     });
   }
 
+  async function close(options) {
+    // Retention deliberately preserves active sessions. Mark every session observed by this
+    // proxy run as ended before flushing, otherwise normal CLI sessions would remain active
+    // forever and the configured retention window could never remove them.
+    for (const sessionId of sessions) endSession(sessionId);
+    await sink.close(options);
+  }
+
   return {
     enabled: sink.enabled,
     recorder: sink,
@@ -166,6 +174,6 @@ export function createTelemetry({
     stats: () => ({ ...sink.stats(), ...counters }),
     flush: (options) => sink.flush(options),
     prune: (options) => sink.prune(options),
-    close: (options) => sink.close(options),
+    close,
   };
 }

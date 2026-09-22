@@ -198,6 +198,35 @@ export async function startProxy({
         effort: null,
         startedAt: Date.now(),
       };
+      const observesMessages = telemetry.enabled && /^\/v1\/messages/.test(req.url ?? "");
+      let telemetryFinished = false;
+
+      async function recordOutcome({ observer = null, responseBytes = 0, httpStatus = null }) {
+        if (!observesMessages || telemetryFinished) return;
+        telemetryFinished = true;
+        try {
+          const usage = observer ? await observer.end() : null;
+          telemetry.noteRequest({
+            id: observed.requestId,
+            sessionId: observed.sessionId,
+            actorId: observed.actorId,
+            routeId: observed.routeId,
+            timestamp: observed.startedAt,
+            classification: observed.classification ?? "unknown",
+            isContinuation: observed.isContinuation ? 1 : 0,
+            model: observed.model,
+            effort: observed.effort,
+            requestBytes: out.length,
+            responseBytes,
+            latencyMs: Date.now() - observed.startedAt,
+            httpStatus,
+            success: httpStatus >= 200 && httpStatus < 400 ? 1 : 0,
+          });
+          telemetry.noteUsage(observed.requestId, usage);
+        } catch (err) {
+          debug(`telemetry could not record this request: ${redactText(err.message)}`);
+        }
+      }
 
       if (/^\/v1\/messages/.test(req.url ?? "")) {
         try {
@@ -437,7 +466,7 @@ export async function startProxy({
         },
         (up) => {
           const isModels = req.method === "GET" && /^\/v1\/models(?:\?|$)/.test(req.url ?? "");
-          const isMessages = telemetry.enabled && /^\/v1\/messages/.test(req.url ?? "");
+          const isMessages = observesMessages;
           if (isModels) {
             const chunks = [];
             up.on("data", (chunk) => chunks.push(chunk));
@@ -491,37 +520,13 @@ export async function startProxy({
                 // Observation is best effort; forwarding continues regardless.
               }
             });
-            const finish = async () => {
-              try {
-                const usage = await observer.end();
-                telemetry.noteRequest({
-                  id: observed.requestId,
-                  sessionId: observed.sessionId,
-                  actorId: observed.actorId,
-                  routeId: observed.routeId,
-                  timestamp: observed.startedAt,
-                  classification: observed.classification ?? "unknown",
-                  isContinuation: observed.isContinuation ? 1 : 0,
-                  model: observed.model,
-                  effort: observed.effort,
-                  requestBytes: out.length,
-                  responseBytes,
-                  latencyMs: Date.now() - observed.startedAt,
-                  httpStatus: up.statusCode ?? null,
-                  success: up.statusCode >= 200 && up.statusCode < 400 ? 1 : 0,
-                });
-                telemetry.noteUsage(observed.requestId, usage);
-              } catch (err) {
-                debug(`telemetry could not record this request: ${redactText(err.message)}`);
-              }
-            };
             // A response ends normally, is aborted mid-stream, or errors. Whichever happens,
             // the partial usage seen so far is recorded once, marked incomplete by the parser.
             let finished = false;
             const finishOnce = () => {
               if (finished) return;
               finished = true;
-              finish();
+              recordOutcome({ observer, responseBytes, httpStatus: up.statusCode ?? null });
             };
             up.on("end", finishOnce);
             up.on("aborted", finishOnce);
@@ -546,7 +551,9 @@ export async function startProxy({
       upstream.on("error", (e) => {
         debug(`upstream error: ${e.message}`);
         if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
-        res.end(JSON.stringify({ type: "error", error: { message: e.message } }));
+        const errorBody = JSON.stringify({ type: "error", error: { message: e.message } });
+        res.end(errorBody);
+        recordOutcome({ responseBytes: Buffer.byteLength(errorBody), httpStatus: 502 });
       });
       if (out.length) upstream.write(out);
       upstream.end();

@@ -367,9 +367,9 @@ are a later change.
 | `JEV_STORE_PROMPT_PREVIEW` | Both | Stores a truncated, secret-scrubbed prompt preview instead of the full prompt. |
 | `JEV_SUBAGENT_MODEL_POLICY` | Claude | `route` (default), `respect-explicit`, or `inherit`; see Actors, subagents, and auxiliary calls. |
 | `JEV_AUXILIARY_POLICY` | Claude | `passthrough` (default), `inherit`, or `fast` for Claude Code's own tool-less auxiliary calls. |
-| `JEV_ENABLE_TELEMETRY` | Both | Records routes and usage to a local SQLite database. Off by default. |
-| `JEV_DATA_DIR` | Both | Directory for the telemetry database; defaults to `~/.jev-router`. |
-| `JEV_TELEMETRY_RETENTION_DAYS` | Both | Days of ended sessions to keep; defaults to `90`. An invalid value falls back to the default rather than keeping data forever. |
+| `JEV_ENABLE_TELEMETRY` | Claude | Records routes and usage to a local SQLite database. Off by default. |
+| `JEV_DATA_DIR` | Claude | Directory for the telemetry database; defaults to `~/.jev-router`. |
+| `JEV_TELEMETRY_RETENTION_DAYS` | Claude | Days of ended sessions to keep; defaults to `90`. An invalid value falls back to the default rather than keeping data forever. |
 | `JEV_NO_STATUSLINE` | Claude | Disables the injected Claude status line. |
 | `JEV_CODEX_FAST_MODEL` | Codex | Fast model; defaults to `gpt-5.6-luna`. |
 | `JEV_CODEX_BALANCED_MODEL` | Codex | Balanced model; defaults to `gpt-5.6-terra`. |

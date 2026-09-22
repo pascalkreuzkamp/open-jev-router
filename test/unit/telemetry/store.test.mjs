@@ -161,6 +161,30 @@ test("a database newer than this build is refused rather than rewritten", needsD
   assert.throws(() => migrate(db), /newer than this router understands/);
 });
 
+test("a failed migration leaves a populated version-zero database intact", needsDriver, (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "jev-store-migration-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "telemetry.sqlite3");
+  const seeded = new driver(path);
+  seeded.exec("CREATE TABLE sessions (id TEXT PRIMARY KEY, marker TEXT)");
+  seeded.prepare("INSERT INTO sessions (id, marker) VALUES (?, ?)").run("legacy", "keep-me");
+  seeded.close();
+
+  assert.throws(() => openDatabase(path, { driver }), /sessions already exists/);
+
+  const after = new driver(path);
+  t.after(() => after.close());
+  assert.equal(after.pragma("user_version", { simple: true }), 0);
+  assert.deepEqual(after.prepare("SELECT id, marker FROM sessions").all(), [
+    { id: "legacy", marker: "keep-me" },
+  ]);
+  assert.equal(
+    after.prepare("SELECT COUNT(*) c FROM sqlite_master WHERE type = 'table'").get().c,
+    1,
+    "no table from the failed migration was left behind",
+  );
+});
+
 test("migrations are append-only and uniquely versioned", () => {
   const versions = MIGRATIONS.map(({ version }) => version);
   assert.deepEqual(versions, [...versions].sort((a, b) => a - b));

@@ -53,12 +53,15 @@ parentPort.on("message", (message) => {
     }
   } catch (err) {
     // A write failure (disk full, locked database) loses that batch and nothing else. The
-    // parent counts it as dropped and keeps forwarding inference.
+    // parent counts every lost event and keeps forwarding inference.
+    const rejected = message.type === "events"
+      ? message.batch.map(({ kind }) => ({ kind, message: err?.message ?? String(err) }))
+      : [{ kind: message.type, message: err?.message ?? String(err) }];
     parentPort.postMessage({
       type: "ack",
       id: message.id,
       written: 0,
-      rejected: [{ kind: message.type, message: err?.message ?? String(err) }],
+      rejected,
       failed: true,
     });
   }
