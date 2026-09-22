@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { resolve } from "node:path";
+import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import {
   openReader,
@@ -127,7 +128,17 @@ function renderFailure(args, result) {
     : { exitCode: 1, stderr: `${result.message}\n` };
 }
 
-const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+// npm installs a bin as a symlink into node_modules/.bin, so argv[1] is the link while
+// import.meta.url is the file Node actually resolved. Comparing them unresolved made the
+// installed `jev` command exit 0 having done nothing at all.
+const invokedDirectly = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+  } catch {
+    return false;
+  }
+})();
 if (invokedDirectly) {
   const result = run(process.argv.slice(2));
   if (result.stdout) process.stdout.write(result.stdout);

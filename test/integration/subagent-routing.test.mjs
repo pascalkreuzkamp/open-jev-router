@@ -407,6 +407,25 @@ test("a manual selection reports manual state without disturbing another actor",
   assert.deepEqual(seen.map(({ model }) => model), ["claude-haiku-4-5-20251001", "claude-opus-5"]);
 });
 
+test("returning to the Jev Router row resumes routing at the next boundary", async (t) => {
+  const session = "s-resume";
+  const { seen, asked, send } = await harness(t, { route: async () => choose("haiku-default") });
+
+  // Routed, then the user picks a concrete model from /model, then picks Jev Router again.
+  await send(body({ session, actor: "main", type: "main", turn: "t1", prompt: "first task" }));
+  await send(body({ session, actor: "main", type: "main", turn: "t2", prompt: "second task", model: "claude-opus-5" }));
+  assert.equal(readStatus(session).manual, true);
+  await send(body({ session, actor: "main", type: "main", turn: "t3", prompt: "third task" }));
+
+  assert.equal(asked.length, 2, "the manual turn bought no decision; the return bought one");
+  assert.deepEqual(
+    seen.map(({ model }) => model),
+    ["claude-haiku-4-5-20251001", "claude-opus-5", "claude-haiku-4-5-20251001"],
+  );
+  // The status line treats any falsy `manual` as routed, so a routed decision simply omits it.
+  assert.ok(!readStatus(session).manual, "the status line stops reporting a paused router");
+});
+
 test("after a restart a continuation falls back safely instead of reconstructing identity", async (t) => {
   const first = await harness(t, { route: async () => choose("haiku-default") });
   await first.send(body({ session: "s-restart", actor: "main", type: "main", turn: "t1", prompt: "main task" }));

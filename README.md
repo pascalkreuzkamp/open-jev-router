@@ -433,14 +433,29 @@ npm install
 echo "JEV_API_KEY=..." > .env
 
 npm test
-node test/live-routing.mjs
 node bin/jev-claude.mjs -p "what is 2+2?"
 node bin/jev-codex.mjs exec "what is 2+2?"
+```
+
+`npm test` mocks both the upstream API and Jev, so it needs no credentials and no network. The
+checks below are separate, explicitly invoked operations. Each live command refuses to run
+unless you authorize it with `JEV_LIVE=1`, prints what it is about to spend before spending
+it, and writes a redacted record to `~/.jev-router/live-evidence/`. `test:pack` costs nothing
+but reaches the npm registry to install dependencies.
+
+```bash
+JEV_LIVE=1 OPENROUTER_API_KEY=... npm run test:live:jev-openrouter   # real routing decisions
+JEV_LIVE=1 OPENROUTER_API_KEY=... npm run test:live:claude           # real Claude turn on subscription auth
+JEV_LIVE=1 OPENROUTER_API_KEY=... npm run test:live:subagents        # real subagent actors
+npm run test:pack                                                     # install the real tarball, run every CLI
 ```
 
 The test suite covers shared policy, both request formats, model rewriting, capability
 handling, settings restoration, Codex authentication forwarding, native model-picker
 injection, and decision display.
+
+See [docs/compatibility.md](docs/compatibility.md) for supported versions, configuration
+migration, failure behaviour, rollback, and what remains unverified.
 
 ## Limitations
 
