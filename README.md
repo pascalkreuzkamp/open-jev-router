@@ -265,8 +265,41 @@ The bundled matrix was verified on 2026-09-22 against Anthropic's
 documentation. Runtime effort capabilities returned by the signed-in account take precedence;
 validated exact-model overrides cover private or newer catalog entries.
 
-Tool-loop continuations keep the tier chosen at the start of the turn. Main conversations and
-sub-agents are pinned separately. Routing is fail-open: Jev failure never blocks the CLI.
+Tool-loop continuations keep the tier chosen at the start of the turn. Routing is fail-open:
+Jev failure never blocks the CLI.
+
+### Actors, subagents, and auxiliary calls
+
+Each request is classified as one of `main_fresh`, `main_continuation`, `subagent_fresh`,
+`subagent_continuation`, `auxiliary`, `manual_passthrough`, or `unknown`. A route is chosen
+once per main fresh turn and once per newly spawned subagent task, then pinned -- model,
+effort, and thinking policy together -- to that actor and turn. Concurrent requests for the
+same boundary share one decision; unrelated actors never wait on each other. A subagent's
+route never replaces the main agent's pin, and the main pin survives subagent returns,
+retries, and interleaved tool results.
+
+Identity comes from explicit correlation fields on the request when they are present. When
+they are not, the router is deliberately conservative: the first inference root in a session
+establishes the main actor, its own continuations are recognised by their transcript root,
+and any other uncorrelated root is treated as `unknown` and passed through unrouted rather
+than guessed at from task text. Two identical subagent tasks are otherwise indistinguishable
+on the wire, and a wrong guess would overwrite another actor's pin. After a restart the
+router does not reconstruct identity from saved decisions; it falls back safely until the
+next confirmed boundary.
+
+Subagent handling is set with `JEV_SUBAGENT_MODEL_POLICY`:
+
+| Value | Behavior |
+| --- | --- |
+| `route` (default) | Routes confidently identified subagents. A model the user locked (`model_source` of `user`/`hard-lock`) always wins, and unknown lock provenance preserves the requested model. |
+| `respect-explicit` | Routes only requests carrying the `jev-router` sentinel; any concrete requested model is left alone. |
+| `inherit` | Skips Jev entirely and reuses the parent's pinned route. A subagent whose parent is not safely known falls back to an ordinary routed decision. |
+
+Claude Code's own auxiliary calls (titles, summaries, suggestions -- requests with no tools)
+make no Jev call and change no pin or manual-selection state. `JEV_AUXILIARY_POLICY` selects
+`passthrough` (default), `inherit` (reuse the actor's or parent's pinned route), or `fast`
+(always the fast profile). Because the `jev-router` sentinel is not a real model, an auxiliary
+request carrying it is still resolved to a safe real model before it is forwarded.
 
 ## Configuration
 
@@ -289,6 +322,8 @@ sub-agents are pinned separately. Routing is fail-open: Jev failure never blocks
 | `JEV_DUMP_CONTENT` | Both | Includes message/system/instructions text in a `JEV_DUMP` dump (still redacted for secrets). |
 | `JEV_STORE_PROMPTS` | Both | Stores the exact prompt text on a routing decision; off by default (a SHA-256 hash is stored instead). |
 | `JEV_STORE_PROMPT_PREVIEW` | Both | Stores a truncated, secret-scrubbed prompt preview instead of the full prompt. |
+| `JEV_SUBAGENT_MODEL_POLICY` | Claude | `route` (default), `respect-explicit`, or `inherit`; see Actors, subagents, and auxiliary calls. |
+| `JEV_AUXILIARY_POLICY` | Claude | `passthrough` (default), `inherit`, or `fast` for Claude Code's own tool-less auxiliary calls. |
 | `JEV_NO_STATUSLINE` | Claude | Disables the injected Claude status line. |
 | `JEV_CODEX_FAST_MODEL` | Codex | Fast model; defaults to `gpt-5.6-luna`. |
 | `JEV_CODEX_BALANCED_MODEL` | Codex | Balanced model; defaults to `gpt-5.6-terra`. |
@@ -342,6 +377,11 @@ injection, and decision display.
   published documentation. Treat OpenRouter routing as unverified until exercised with a real
   key.
 - Jev adds latency only to the first request of a turn; tool-loop continuations add none.
+- Independent subagent routing is only as reliable as the request's actor correlation.
+  Claude Code is not documented to send actor identifiers, and no captured request in this
+  codebase carries them. The behavior above is covered by synthetic tests; without real
+  correlation the router falls back to the conservative main-actor rule described there,
+  which routes the main agent and passes unidentified actors through unrouted.
 - Claude Code and Codex request formats are not public contracts. Set `JEV_DUMP=1` to diagnose
   upstream changes from sanitized wire dumps under `~/.jev-router/dumps`.
 - Developed and tested on Windows against Claude Code v2.1.101 and OpenAI Codex v0.154.0.

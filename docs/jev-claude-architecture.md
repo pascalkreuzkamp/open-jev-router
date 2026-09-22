@@ -33,17 +33,22 @@ flowchart TB
     loopback --> head{"HEAD probe?"}
     head -- Yes --> headOK["Return 200"]
     head -- No --> parse["Parse request body\nOptionally dump body with JEV_DUMP\nNormalize legacy MCP JSON schemas"]
-    parse --> mode{"model is `jev-router`?"}
+    parse --> classify["Classify request — src/claude/adapter.mjs + classify.mjs\nshape: fresh / continuation / auxiliary / unknown\nread explicit actor correlation only"]
+    classify --> detect["Detect actor — src/routing/actors.mjs\nexplicit actor id, else first session root as main\nelse unknown; sessions namespace all identities"]
+    detect --> mode{"Classification"}
 
-    mode -- No --> pass["Leave model unchanged\nFor agent requests, publish manual status"]
-    mode -- Yes --> conversation["Build conversation key\nsession ID + first-message text\nKeep up to 50 independent states"]
-    conversation --> fresh{"Fresh user turn?\n(tool-bearing, last user text,\nnot a tool-result continuation)"}
-    fresh -- No --> pinned["Reuse tier pinned for this conversation\n(default: sonnet)"]
-    fresh -- Yes --> prompt["Remove system-reminder blocks\nEstimate context tokens"]
+    mode -- "manual_passthrough" --> pass["Leave model unchanged\nFor identified actors, publish manual status"]
+    mode -- "auxiliary" --> aux["JEV_AUXILIARY_POLICY\npassthrough / inherit / fast\nno Jev call, no pin or manual-state change"]
+    mode -- "unknown" --> unknownPath["Resolve the sentinel only\nNever touch another actor's state"]
+    mode -- "main_* / subagent_*" --> fresh{"Fresh boundary for this actor?"}
+    fresh -- No --> pinned["Reuse the route pinned to this actor's turn\nmodel, effort, and thinking policy together"]
+    fresh -- Yes --> prompt["Remove system-reminder blocks\nEstimate context tokens\nDeduplicate concurrent decisions per boundary\nJEV_SUBAGENT_MODEL_POLICY may inherit or defer"]
     prompt --> jev
     jev --> policy
-    policy --> saveTier["Pin chosen tier in conversation state"]
+    policy --> saveTier["Pin the effective route to this actor and turn"]
     saveTier --> pinned
+    aux --> rewrite
+    unknownPath --> forward
     pinned --> rewrite["Rewrite `jev-router` to Claude tier model ID\nStrip unsupported thinking / effort fields"]
     rewrite --> publish["Write latest tier, confidence, and reason\nto per-session temp status file"]
     pass --> forward
@@ -72,6 +77,13 @@ flowchart TB
   spawn --> exit["On process exit: close proxy\nand restore saved model only if it is still `jev-router`"]
 ```
 
-The routing call happens only for the first request of a user turn. Tool-loop continuations reuse
-the pinned tier, avoiding repeated routing latency and model changes mid-task. A concrete model
-chosen in Claude Code bypasses routing until the user selects **Jev Router** again.
+The routing call happens only at a confirmed boundary: the first request of a main user turn, or
+a newly spawned subagent task. Tool-loop continuations reuse the route pinned to their own actor,
+avoiding repeated routing latency and model changes mid-task, and a subagent's route never
+replaces the main agent's pin. A concrete model chosen in Claude Code bypasses routing until the
+user selects **Jev Router** again.
+
+Actor identity is only as good as the correlation the request carries. Claude Code is not
+documented to send actor identifiers; when none are present the proxy establishes the session's
+first inference root as the main actor and treats any other uncorrelated root as unknown rather
+than splitting actors by task text. See the README's *Actors, subagents, and auxiliary calls*.
