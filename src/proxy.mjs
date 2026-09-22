@@ -30,6 +30,9 @@ import {
   subagentModelPolicy,
 } from "./claude/classify.mjs";
 import { ActorRegistry } from "./routing/actors.mjs";
+import { createTelemetry } from "./telemetry/attach.mjs";
+import { createUsageObserver } from "./telemetry/usage.mjs";
+import { ROUTER_VERSION } from "./version.mjs";
 
 const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 
@@ -170,6 +173,7 @@ export async function startProxy({
   upstreamURL = ANTHROPIC_BASE_URL,
   route = askJev,
   actorRegistry = new ActorRegistry(),
+  telemetry = createTelemetry({ routerVersion: ROUTER_VERSION }),
 } = {}) {
   const catalog = new Map();
 
@@ -181,6 +185,19 @@ export async function startProxy({
     req.on("data", (c) => chunks.push(c));
     req.on("end", async () => {
       let out = Buffer.concat(chunks);
+      // What telemetry knows about this request. Filled in below when the request is one we
+      // can attribute; left empty for anything else, which is then counted but not stored.
+      const observed = {
+        requestId: telemetry.enabled ? telemetry.newId() : null,
+        sessionId: null,
+        actorId: null,
+        routeId: null,
+        classification: null,
+        isContinuation: false,
+        model: null,
+        effort: null,
+        startedAt: Date.now(),
+      };
 
       if (/^\/v1\/messages/.test(req.url ?? "")) {
         try {
@@ -196,6 +213,17 @@ export async function startProxy({
           const key = detection.actorKey ?? statusKey;
           dumpRequest(statusKey, body);
           body.tools?.forEach((t) => sanitizeSchema(t.input_schema));
+
+          observed.classification = classification;
+          observed.isContinuation = request.shape === "continuation";
+          if (detection.actorKey) {
+            observed.sessionId = telemetry.noteSession(statusKey, {
+              claudeSessionId: sessionOf(body) || null,
+              projectPath: process.cwd(),
+              launchMode: "cli",
+            });
+            observed.actorId = telemetry.noteActor(observed.sessionId, detection);
+          }
 
           if (classification === "manual_passthrough") {
             debug(`passthrough, user selected ${body.model}`);
@@ -314,6 +342,20 @@ export async function startProxy({
                 },
               );
               fresh = routed.reused ? null : routed.decision;
+              // A route row is one fresh effective decision. A reused pin is not a decision,
+              // so recording it here would inflate every per-route figure downstream.
+              if (!routed.reused && routed.route) {
+                routed.route.telemetryRouteId ??= telemetry.newId();
+                telemetry.noteRoute({
+                  sessionId: observed.sessionId,
+                  actorId: observed.actorId,
+                  logicalTurnId: routed.logicalTurnId,
+                  classification,
+                  route: routed.route,
+                  jev: routed.jev,
+                  decision: routed.decision,
+                });
+              }
               debug(
                 `${key} ${routed.jev ? `${routed.jev.ms}ms p=${routed.jev.confidence == null ? "n/a" : routed.jev.confidence.toFixed(2)}` : "no-jev"} ` +
                   `${current} -> ${routed.route?.legacyTier ?? tierOf(routed.route?.model) ?? current} (${routed.decision.reason}) ctx~${contextTokens} | prompt ${routed.decision.promptHash.slice(0, 12)}`,
@@ -354,8 +396,11 @@ export async function startProxy({
                 fresh.normalizationNotes = actor.pinnedRoute.normalizationNotes;
               }
             }
+            observed.routeId = actor.pinnedRoute?.telemetryRouteId ?? null;
             for (const field of Object.keys(body)) delete body[field];
             Object.assign(body, transformed.body);
+            observed.model = body.model ?? null;
+            observed.effort = body.output_config?.effort ?? null;
             // Publish what went out. Claude Code's UI shows the row you picked, not the tier
             // it resolved to, so the status line is the only place this is visible.
             // `claude -p` omits metadata on the first request of a session, so there is no
@@ -392,6 +437,7 @@ export async function startProxy({
         },
         (up) => {
           const isModels = req.method === "GET" && /^\/v1\/models(?:\?|$)/.test(req.url ?? "");
+          const isMessages = telemetry.enabled && /^\/v1\/messages/.test(req.url ?? "");
           if (isModels) {
             const chunks = [];
             up.on("data", (chunk) => chunks.push(chunk));
@@ -425,6 +471,75 @@ export async function startProxy({
               debug(`${up.statusCode} served by ${m[1]}`);
             });
           }
+
+          // Usage is read from a copy of the bytes, never from the bytes themselves: the
+          // response is piped through untouched, so nothing here can change what Claude Code
+          // receives, and an observer failure cannot interrupt the stream.
+          const observer = isMessages
+            ? createUsageObserver({
+                contentType: up.headers["content-type"] ?? "",
+                contentEncoding: up.headers["content-encoding"] ?? null,
+              })
+            : null;
+          if (observer) {
+            let responseBytes = 0;
+            up.on("data", (chunk) => {
+              responseBytes += chunk.length;
+              try {
+                observer.write(chunk);
+              } catch {
+                // Observation is best effort; forwarding continues regardless.
+              }
+            });
+            const finish = async () => {
+              try {
+                const usage = await observer.end();
+                telemetry.noteRequest({
+                  id: observed.requestId,
+                  sessionId: observed.sessionId,
+                  actorId: observed.actorId,
+                  routeId: observed.routeId,
+                  timestamp: observed.startedAt,
+                  classification: observed.classification ?? "unknown",
+                  isContinuation: observed.isContinuation ? 1 : 0,
+                  model: observed.model,
+                  effort: observed.effort,
+                  requestBytes: out.length,
+                  responseBytes,
+                  latencyMs: Date.now() - observed.startedAt,
+                  httpStatus: up.statusCode ?? null,
+                  success: up.statusCode >= 200 && up.statusCode < 400 ? 1 : 0,
+                });
+                telemetry.noteUsage(observed.requestId, usage);
+              } catch (err) {
+                debug(`telemetry could not record this request: ${redactText(err.message)}`);
+              }
+            };
+            // A response ends normally, is aborted mid-stream, or errors. Whichever happens,
+            // the partial usage seen so far is recorded once, marked incomplete by the parser.
+            let finished = false;
+            const finishOnce = () => {
+              if (finished) return;
+              finished = true;
+              finish();
+            };
+            up.on("end", finishOnce);
+            up.on("aborted", finishOnce);
+            up.on("error", finishOnce);
+            up.on("close", finishOnce);
+          }
+          // `pipe` only ends the downstream response on a clean `end`. If upstream drops the
+          // connection mid-stream, the client would otherwise wait forever, so the truncation
+          // is propagated instead of being papered over with a clean end that would look like
+          // a complete response.
+          const abort = () => {
+            if (!res.writableEnded) res.destroy();
+          };
+          up.on("aborted", abort);
+          up.on("error", (err) => {
+            debug(`upstream stream ended early: ${redactText(err.message)}`);
+            abort();
+          });
           up.pipe(res);
         },
       );
@@ -439,5 +554,13 @@ export async function startProxy({
   });
 
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return { port: server.address().port, close: () => server.close() };
+  return {
+    port: server.address().port,
+    telemetry,
+    close: () => {
+      server.close();
+      // Bounded: a stuck writer must not delay the CLI's exit.
+      return telemetry.close().catch(() => {});
+    },
+  };
 }

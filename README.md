@@ -301,6 +301,49 @@ make no Jev call and change no pin or manual-selection state. `JEV_AUXILIARY_POL
 (always the fast profile). Because the `jev-router` sentinel is not a real model, an auxiliary
 request carrying it is still resolved to a safe real model before it is forwarded.
 
+## Usage telemetry
+
+Telemetry is **off by default**. With `JEV_ENABLE_TELEMETRY=1`, the router records what it
+routed and what those requests cost in tokens, into a local SQLite database:
+
+```text
+~/.jev-router/telemetry.sqlite3      (directory 0700, database and sidecars 0600)
+```
+
+Nothing is sent anywhere. The database answers, per session: how many routes went to each
+model and effort, how many were main-agent versus subagent, how many were fresh decisions
+versus tool-loop continuations, what the routing decisions cost through the provider, and what
+Claude reported for input, output, and cache tokens.
+
+**Writes never touch the response path.** Events are queued in memory and written by a worker
+thread in batched transactions. The response itself is piped through untouched; usage is read
+from a copy of the bytes. If the database is missing, locked, corrupt, or full, telemetry
+disables itself for that run with a diagnostic and inference continues unaffected. A saturated
+queue drops events and counts them rather than growing.
+
+**Counts are honest about what is missing.** A response whose usage was never observed -- a
+stream cut short, an unreadable encoding -- leaves that request's tokens `NULL`, and every
+total reports how many requests were unaccounted for. Unknown is never rendered as zero.
+
+**No Claude cost is computed.** `jev-claude` runs against a Claude subscription, so an "API
+cost" would be fiction. Only the routing provider's own reported cost is stored, and only when
+the provider reports it.
+
+The database schema is versioned with `PRAGMA user_version` and migrated forward; a normal
+upgrade never asks you to delete telemetry, and a database written by a newer router is left
+untouched rather than rewritten. Sessions that ended more than `JEV_TELEMETRY_RETENTION_DAYS`
+ago (default 90) are removed at launch, in one transaction, with their actors, routes,
+requests, and usage. A session with no recorded end is active and is never removed.
+
+Prompt text is not stored: routes carry a SHA-256 request hash, and `prompt_preview` is `NULL`
+unless `JEV_STORE_PROMPT_PREVIEW=1` or `JEV_STORE_PROMPTS=1` is set. Credentials are never
+persisted.
+
+Telemetry needs the optional native dependency `better-sqlite3`. If it is not installed (or
+cannot build on your platform), the router runs normally and telemetry stays off. Reading and
+aggregation live in `src/telemetry/read.mjs`; the CLI tables and dashboard that present them
+are a later change.
+
 ## Configuration
 
 | Variable | Interface | Effect |
@@ -324,6 +367,9 @@ request carrying it is still resolved to a safe real model before it is forwarde
 | `JEV_STORE_PROMPT_PREVIEW` | Both | Stores a truncated, secret-scrubbed prompt preview instead of the full prompt. |
 | `JEV_SUBAGENT_MODEL_POLICY` | Claude | `route` (default), `respect-explicit`, or `inherit`; see Actors, subagents, and auxiliary calls. |
 | `JEV_AUXILIARY_POLICY` | Claude | `passthrough` (default), `inherit`, or `fast` for Claude Code's own tool-less auxiliary calls. |
+| `JEV_ENABLE_TELEMETRY` | Both | Records routes and usage to a local SQLite database. Off by default. |
+| `JEV_DATA_DIR` | Both | Directory for the telemetry database; defaults to `~/.jev-router`. |
+| `JEV_TELEMETRY_RETENTION_DAYS` | Both | Days of ended sessions to keep; defaults to `90`. An invalid value falls back to the default rather than keeping data forever. |
 | `JEV_NO_STATUSLINE` | Claude | Disables the injected Claude status line. |
 | `JEV_CODEX_FAST_MODEL` | Codex | Fast model; defaults to `gpt-5.6-luna`. |
 | `JEV_CODEX_BALANCED_MODEL` | Codex | Balanced model; defaults to `gpt-5.6-terra`. |
@@ -377,6 +423,11 @@ injection, and decision display.
   published documentation. Treat OpenRouter routing as unverified until exercised with a real
   key.
 - Jev adds latency only to the first request of a turn; tool-loop continuations add none.
+- Telemetry's streaming usage parser is verified against synthetic Anthropic SSE fixtures
+  covering chunk splits, multi-byte splits, compression, duplicate and cumulative usage
+  fields, malformed events, and early closure. It has not been validated against a live
+  Claude response, so a future change to Anthropic's usage fields would show up as missing
+  counts rather than wrong ones (`raw_usage_json` keeps whatever was seen).
 - Independent subagent routing is only as reliable as the request's actor correlation.
   Claude Code is not documented to send actor identifiers, and no captured request in this
   codebase carries them. The behavior above is covered by synthetic tests; without real
