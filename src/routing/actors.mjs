@@ -18,6 +18,9 @@ function newActor({ actorId, actorType, actorKey, parentActorKey = null, agentNa
     lastSeenAt: at,
     requestCount: 0,
     continuationCount: 0,
+    // Proof that the pinned turn is genuinely under way. Only a continuation establishes it;
+    // a second opening request does not. See decideOnce.
+    sawContinuationSinceDecision: false,
   };
 }
 
@@ -25,6 +28,13 @@ function newActor({ actorId, actorType, actorKey, parentActorKey = null, agentNa
 // age rather than by a global count, because a count evicts whichever pin is least recently
 // touched, which is exactly the long-running main agent a burst of subagents pushes out.
 export const ACTOR_IDLE_TTL_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * How long a pinned route absorbs a repeated opening request instead of treating it as a new
+ * turn. Sized from the observed ~1s gap between Claude Code's two serializations of the same
+ * opening, with headroom, and far below the pace of a human typing the next turn.
+ */
+export const RESEND_WINDOW_MS = 5000;
 
 export class ActorRegistry {
   #sessions = new Map();
@@ -84,7 +94,10 @@ export class ActorRegistry {
       if (actor.actorType === "main") session.mainActorKey ??= actorKey;
       actor.lastSeenAt = now();
       actor.requestCount += 1;
-      if (request.shape === "continuation") actor.continuationCount += 1;
+      if (request.shape === "continuation") {
+        actor.continuationCount += 1;
+        actor.sawContinuationSinceDecision = true;
+      }
       return {
         actorType: actor.actorType,
         actorKey,
@@ -92,6 +105,47 @@ export class ActorRegistry {
         isFresh: request.shape === "fresh",
         confidence: "high",
         evidence: ["explicit actor id", "explicit actor type"],
+        actor,
+        session,
+      };
+    }
+
+    // Claude Code declares subagent calls in its billing header (`cc_is_subagent=true`) but
+    // gives them no id, so identity has to come from the task text. Splitting on task text is
+    // safe *here* in a way it is not for uncorrelated roots generally: a declared subagent can
+    // only ever create or match a subagent actor, so it cannot reach the main agent's pin no
+    // matter what its prompt says. That was the hazard the rule below guards against.
+    //
+    // Two subagents running different tasks get different keys and route independently. Two
+    // running the identical task share a key and therefore a route, which is the right answer
+    // rather than a collision: the same task deserves the same model.
+    if (correlation.declaredSubagent && request.firstMessageFingerprint) {
+      const actorKey = `sub:${request.firstMessageFingerprint}`;
+      let actor = session.actors.get(actorKey);
+      if (!actor) {
+        actor = newActor({
+          actorId: actorKey,
+          actorType: "subagent",
+          actorKey,
+          parentActorKey: session.mainActorKey,
+          agentName: correlation.agentName,
+          fingerprint: request.firstMessageFingerprint,
+        });
+        session.actors.set(actorKey, actor);
+      }
+      actor.lastSeenAt = now();
+      actor.requestCount += 1;
+      if (request.shape === "continuation") {
+        actor.continuationCount += 1;
+        actor.sawContinuationSinceDecision = true;
+      }
+      return {
+        actorType: "subagent",
+        actorKey,
+        parentActorKey: actor.parentActorKey,
+        isFresh: request.shape === "fresh",
+        confidence: "medium",
+        evidence: ["client declared subagent", "identity from task fingerprint"],
         actor,
         session,
       };
@@ -131,7 +185,10 @@ export class ActorRegistry {
     ) {
       main.lastSeenAt = now();
       main.requestCount += 1;
-      if (request.shape === "continuation") main.continuationCount += 1;
+      if (request.shape === "continuation") {
+        main.continuationCount += 1;
+        main.sawContinuationSinceDecision = true;
+      }
       return {
         actorType: "main",
         actorKey: main.actorKey,
@@ -165,6 +222,30 @@ export class ActorRegistry {
   }
 
   async decideOnce(actor, logicalTurnId, factory) {
+    // Claude Code sends the opening request of a turn twice: once as [user, system] and again
+    // as a fuller single user message. Verified live against 2.1.278 on 2026-09-22, roughly a
+    // second apart. Both classify as fresh, and with no turn id on the wire each minted its
+    // own local turn key, so one user turn bought two routing decisions and the model could
+    // change between them.
+    //
+    // A pinned route therefore survives a second opening, because the only evidence that a
+    // turn is genuinely under way is a continuation. The time bound keeps this from swallowing
+    // a real next turn: the re-send arrives within about a second, while a human turn in an
+    // interactive session takes far longer, and each scripted `claude -p` run is its own
+    // session with its own actors.
+    if (
+      !logicalTurnId &&
+      actor.pinnedRoute &&
+      !actor.sawContinuationSinceDecision &&
+      now() - (actor.lastDecisionAt ?? 0) < RESEND_WINDOW_MS
+    ) {
+      return {
+        route: actor.pinnedRoute,
+        decision: actor.lastDecision,
+        logicalTurnId: actor.activeLogicalTurnId,
+        reused: true,
+      };
+    }
     const turnId = logicalTurnId || `local-turn:${randomUUID()}`;
     if (actor.activeLogicalTurnId === turnId && actor.pinnedRoute) {
       return {
@@ -182,6 +263,8 @@ export class ActorRegistry {
         actor.activeLogicalTurnId = turnId;
         actor.pinnedRoute = value.route;
         actor.lastDecision = value.decision ?? null;
+        actor.lastDecisionAt = now();
+        actor.sawContinuationSinceDecision = false;
         actor.lastSeenAt = now();
         return { ...value, logicalTurnId: turnId, reused: false };
       })

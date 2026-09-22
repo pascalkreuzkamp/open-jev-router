@@ -80,8 +80,17 @@ export const jevTimeoutMs = (env = process.env) => {
   return Number.isFinite(configured) && configured > 0 ? configured : THRESHOLDS.jevTimeoutMs;
 };
 
-/** Default OpenRouter Jev model alias; overridable via `JEV_OPENROUTER_MODEL`. */
-export const DEFAULT_OPENROUTER_MODEL = "typesafe/jev-latest";
+/**
+ * Default Jev model requested from OpenRouter; overridable via `JEV_OPENROUTER_MODEL`.
+ *
+ * This must name a version that exists. OpenRouter publishes no floating alias for Jev:
+ * verified live on 2026-09-22, `typesafe/jev-latest`, `typesafe/jev` and `typesafe/jev-1`
+ * all return HTTP 400 "Model ... does not exist", which fails open to no routing at all.
+ * `typesafe/jev-1.13` is the form the Decisions API reference itself uses, and it resolves
+ * server-side to a dated build (`typesafe/jev-1.13-20260917` at time of writing), so it
+ * tracks fixes within the 1.13 line without being frozen to one day's snapshot.
+ */
+export const DEFAULT_OPENROUTER_MODEL = "typesafe/jev-1.13";
 
 /**
  * Categories a provider adapter must sort any failure into (FR-002). `askJev` logs the

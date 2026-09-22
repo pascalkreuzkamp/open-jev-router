@@ -380,7 +380,7 @@ numeric data is `null`, not zero. Errors are JSON objects with `ok: false`, `cod
 | `JEV_API_KEY` | Both | Enables direct-TypeSafe routing. `TYPESAFE_API_KEY` also works. |
 | `OPENROUTER_API_KEY` | Both | Enables OpenRouter routing (preferred over a TypeSafe key when both are set and `JEV_PROVIDER` is unset). |
 | `JEV_PROVIDER` | Both | Forces `openrouter` or `typesafe`, instead of the automatic key-based preference. An unknown value or a missing key for the forced provider disables routing visibly rather than falling back to another key. |
-| `JEV_OPENROUTER_MODEL` | Both | Jev model alias requested from OpenRouter; defaults to `typesafe/jev-latest`. |
+| `JEV_OPENROUTER_MODEL` | Both | Jev model requested from OpenRouter; defaults to `typesafe/jev-1.13`, which OpenRouter resolves to a dated build. There is no floating `-latest` alias for Jev; naming one that does not exist disables routing silently. |
 | `JEV_TIMEOUT_MS` | Both | Total wall-clock deadline for one Jev decision (request plus any retry); defaults to `1500`. A routing outage never stalls the turn longer than this. |
 | `JEV_DECISION_MODE` | Claude | `profiles` (default) lets Jev choose a validated model/effort profile; `signals` maps the original model and normalized reasoning signals locally. |
 | `JEV_CONFIDENCE_LOW` / `JEV_CONFIDENCE_HIGH` | Claude | Confidence boundaries; default to `0.45` / `0.80`. |
@@ -433,21 +433,36 @@ npm install
 echo "JEV_API_KEY=..." > .env
 
 npm test
-node test/live-routing.mjs
 node bin/jev-claude.mjs -p "what is 2+2?"
 node bin/jev-codex.mjs exec "what is 2+2?"
+```
+
+`npm test` mocks both the upstream API and Jev, so it needs no credentials and no network. The
+checks below are separate, explicitly invoked operations. Each live command refuses to run
+unless you authorize it with `JEV_LIVE=1`, prints what it is about to spend before spending
+it, and writes a redacted record to `~/.jev-router/live-evidence/`. `test:pack` costs nothing
+but reaches the npm registry to install dependencies.
+
+```bash
+JEV_LIVE=1 OPENROUTER_API_KEY=... npm run test:live:jev-openrouter   # real routing decisions
+JEV_LIVE=1 OPENROUTER_API_KEY=... npm run test:live:claude           # real Claude turn on subscription auth
+JEV_LIVE=1 OPENROUTER_API_KEY=... npm run test:live:subagents        # real subagent actors
+npm run test:pack                                                     # install the real tarball, run every CLI
 ```
 
 The test suite covers shared policy, both request formats, model rewriting, capability
 handling, settings restoration, Codex authentication forwarding, native model-picker
 injection, and decision display.
 
+See [docs/compatibility.md](docs/compatibility.md) for supported versions, configuration
+migration, failure behaviour, rollback, and what remains unverified.
+
 ## Limitations
 
 - The user's fresh task text is sent to whichever Jev provider is active (TypeSafe directly,
   or OpenRouter) for the routing decision. Full tool output and repository contents are not
   sent by default; `jev-claude` prints this when routing starts.
-- The OpenRouter Decisions API is an alpha endpoint; its shape and the `typesafe/jev-latest`
+- The OpenRouter Decisions API is an alpha endpoint; its shape and the `typesafe/jev-1.13`
   alias have not been verified against a live account in this codebase, only against current
   published documentation. Treat OpenRouter routing as unverified until exercised with a real
   key.

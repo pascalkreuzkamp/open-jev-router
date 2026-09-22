@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { createOpenRouterProvider } from "../../../src/providers/openrouter.mjs";
-import { PROVIDER_ERROR_CATEGORIES } from "../../../src/config.mjs";
+import { DEFAULT_OPENROUTER_MODEL, PROVIDER_ERROR_CATEGORIES } from "../../../src/config.mjs";
 
 const MODELS = [
   { id: "claude-haiku-4-5-20251001", tier: "haiku" },
@@ -283,4 +283,69 @@ test("healthCheck reports failure without throwing on an invalid key", async (t)
 
   assert.equal(health.ok, false);
   assert.match(health.message, /invalid credentials/);
+});
+
+test("the default Jev model names a real version, not a floating alias", () => {
+  // OpenRouter publishes no floating alias for Jev. Verified live on 2026-09-22 against a
+  // real key: `typesafe/jev-latest`, `typesafe/jev` and `typesafe/jev-1` each return HTTP
+  // 400 "Model ... does not exist", while `typesafe/jev-1.13` returns a decision. Routing
+  // fails open, so a non-existent default is invisible in normal use: every turn simply goes
+  // unrouted. `typesafe/jev-latest` shipped as the default and did exactly that.
+  assert.doesNotMatch(
+    DEFAULT_OPENROUTER_MODEL,
+    /-latest$/,
+    "OpenRouter has no -latest alias for Jev; this default would disable routing entirely",
+  );
+  assert.match(
+    DEFAULT_OPENROUTER_MODEL,
+    /^typesafe\/jev-\d+\.\d+/,
+    "the default must name a published Jev version line, e.g. typesafe/jev-1.13",
+  );
+});
+
+test("a fractional score is a valid answer, because that is what Jev actually returns", async (t) => {
+  // Jev scores are probability-weighted positions on the 0-9 legend, so real answers look
+  // like 0.64, not 1. The normalizer once demanded integers and rejected every genuine
+  // decision as invalid_response; routing fails open, so the only visible symptom was that
+  // OpenRouter routing silently never did anything. Captured live on 2026-09-22.
+  const server = jsonServer((req, res) => {
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      ...VALID_DECISION,
+      answers: {
+        ...VALID_DECISION.answers,
+        task_complexity: { type: "score", score: 0.64, confidence: 0.85 },
+        reasoning_required: { type: "score", score: 1.2, confidence: 0.85 },
+        tool_complexity: { type: "score", score: 0, confidence: 0.9 },
+      },
+    }));
+  });
+  const baseURL = await listening(server);
+  t.after(() => server.close());
+  const provider = createOpenRouterProvider({ apiKey: "sk-or-test", model: "typesafe/jev-1.13", baseURL });
+
+  const result = await provider.route(ROUTE_INPUT);
+
+  assert.equal(result.ok, true);
+  assert.ok(Math.abs(result.metrics.taskComplexity - 0.64 / 9) < 1e-9, "the fraction is preserved, not rounded");
+  assert.ok(Math.abs(result.metrics.reasoningRequired - 1.2 / 9) < 1e-9);
+  assert.equal(result.metrics.toolComplexity, 0);
+});
+
+test("a score outside the legend is still refused", async (t) => {
+  const server = jsonServer((req, res) => {
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      ...VALID_DECISION,
+      answers: { ...VALID_DECISION.answers, task_complexity: { type: "score", score: 9.5 } },
+    }));
+  });
+  const baseURL = await listening(server);
+  t.after(() => server.close());
+  const provider = createOpenRouterProvider({ apiKey: "sk-or-test", model: "typesafe/jev-1.13", baseURL });
+
+  const result = await provider.route(ROUTE_INPUT);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.category, "invalid_response");
 });

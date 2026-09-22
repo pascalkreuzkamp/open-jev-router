@@ -11,8 +11,12 @@ export function normalizeAnswers(body, { contextTokens }) {
   const answers = body?.answers;
   const model = answers?.model;
   const { task_complexity, reasoning_required, tool_complexity } = answers ?? {};
+  // Jev reports a score as the probability-weighted position on the 0-9 legend, so a real
+  // answer is usually fractional (0.64, not 1). Requiring an integer here rejected every
+  // genuine decision as `invalid_response` — verified live on 2026-09-22 — while every
+  // synthetic fixture, which used whole numbers, passed. Out of range is still refused.
   const validScore = (value) =>
-    Number.isInteger(value) && value >= 0 && value <= COMPLEXITY_MAX_SCORE;
+    Number.isFinite(value) && value >= 0 && value <= COMPLEXITY_MAX_SCORE;
   if (
     typeof model?.choice !== "string" ||
     !validScore(task_complexity?.score) ||

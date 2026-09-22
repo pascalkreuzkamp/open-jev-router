@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { selectProvider, hasAnyProviderKey, unavailableMessage } from "../../../src/providers/select.mjs";
+import { DEFAULT_OPENROUTER_MODEL } from "../../../src/config.mjs";
 
 test("prefers OpenRouter when only its key is set", () => {
   const result = selectProvider({ OPENROUTER_API_KEY: "sk-or-x" });
@@ -105,7 +106,7 @@ test("selected OpenRouter provider carries the account's chosen model and deadli
   assert.equal(seenBody.model, "typesafe/jev-custom");
 });
 
-test("blank JEV_OPENROUTER_MODEL falls back to the default alias", async (t) => {
+test("blank JEV_OPENROUTER_MODEL falls back to the default model", async (t) => {
   let seenBody;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
@@ -134,5 +135,7 @@ test("blank JEV_OPENROUTER_MODEL falls back to the default alias", async (t) => 
     models: [{ id: "claude-sonnet-5", tier: "sonnet" }],
   });
 
-  assert.equal(seenBody.model, "typesafe/jev-latest");
+  // The point is the fallback, not the literal: which model is the right default is asserted
+  // once, in openrouter.test.mjs, where the live evidence for it lives.
+  assert.equal(seenBody.model, DEFAULT_OPENROUTER_MODEL);
 });
