@@ -17,6 +17,39 @@ export function cleanPrompt(text) {
   return text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
 }
 
+/**
+ * Claude Code prefixes its system prompt with a billing header of `key=value;` pairs, e.g.
+ * `x-anthropic-billing-header: cc_version=2.1.278.d48; cc_entrypoint=claude-vscode;
+ * cc_is_subagent=true;`. Captured from Claude Code 2.1.278 on 2026-09-22.
+ *
+ * This is the only place real Claude Code states what kind of actor is calling: the
+ * `metadata.user_id` envelope carries session_id, device_id and account_uuid, and no actor
+ * fields at all. Only the header prefix is read, never the prompt that follows it, and only
+ * the three keys below are kept.
+ *
+ * It is an internal field and may disappear. If it does, `actorType` goes back to null and
+ * subagents stop being routed independently — the behaviour before this was known. Nothing
+ * breaks; routing simply narrows.
+ */
+export function billingHeaderOf(body) {
+  const system = body?.system;
+  const text =
+    typeof system === "string"
+      ? system
+      : Array.isArray(system)
+        ? system.map((block) => (typeof block?.text === "string" ? block.text : "")).join(" ")
+        : "";
+  const match = /x-anthropic-billing-header:\s*((?:[a-z0-9_]+=[^;]*;\s*)+)/i.exec(text);
+  if (!match) return {};
+  const fields = {};
+  for (const pair of match[1].split(";")) {
+    const [key, ...rest] = pair.split("=");
+    const name = key.trim();
+    if (name && rest.length) fields[name] = rest.join("=").trim();
+  }
+  return fields;
+}
+
 export function metadataOf(body) {
   const raw = body?.metadata?.user_id;
   if (typeof raw !== "string") return {};
@@ -48,7 +81,14 @@ function stringField(object, names) {
  */
 export function correlationOf(body) {
   const metadata = metadataOf(body);
-  const actorType = stringField(metadata, ["actor_type", "agent_type"]);
+  const billing = billingHeaderOf(body);
+  // The envelope wins when it carries an explicit type; the billing header is the fallback,
+  // and on current Claude Code it is the only source. `cc_is_subagent` is only ever read as
+  // a positive assertion: its absence means "not declared", not "this is the main agent",
+  // which matters because auxiliary calls also lack it.
+  const declaredSubagent = billing.cc_is_subagent === "true";
+  const actorType =
+    stringField(metadata, ["actor_type", "agent_type"]) ?? (declaredSubagent ? "subagent" : null);
   return {
     sessionId: stringField(metadata, ["session_id"]),
     actorId: stringField(metadata, ["actor_id", "agent_id"]),
@@ -58,6 +98,9 @@ export function correlationOf(body) {
     requestId: stringField(metadata, ["request_id"]),
     agentName: stringField(metadata, ["agent_name", "subagent_type"]),
     modelSource: stringField(metadata, ["model_source"]),
+    declaredSubagent,
+    clientVersion: typeof billing.cc_version === "string" ? billing.cc_version : null,
+    clientEntrypoint: typeof billing.cc_entrypoint === "string" ? billing.cc_entrypoint : null,
   };
 }
 

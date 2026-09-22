@@ -40,6 +40,9 @@ test("correlationOf reads only explicit fields and never infers them", () => {
     requestId: null,
     agentName: null,
     modelSource: null,
+    declaredSubagent: false,
+    clientVersion: null,
+    clientEntrypoint: null,
   });
 
   const explicit = correlationOf({
@@ -65,7 +68,61 @@ test("correlationOf reads only explicit fields and never infers them", () => {
     requestId: "r-4",
     agentName: "Explore",
     modelSource: "user",
+    declaredSubagent: false,
+    clientVersion: null,
+    clientEntrypoint: null,
   });
+});
+
+test("the billing header supplies the actor type Claude Code omits from its metadata", () => {
+  // Captured from Claude Code 2.1.278 on 2026-09-22. This header is the only place real
+  // Claude Code says what kind of actor is calling; metadata.user_id carries session_id,
+  // device_id and account_uuid and no actor fields at all.
+  const subagent = correlationOf({
+    system: [
+      {
+        type: "text",
+        text:
+          "x-anthropic-billing-header: cc_version=2.1.278.d48; cc_entrypoint=claude-vscode; " +
+          "cc_is_subagent=true; You are a Claude agent, built for coding.",
+      },
+    ],
+    metadata: { user_id: JSON.stringify({ session_id: "s9" }) },
+  });
+  assert.equal(subagent.actorType, "subagent");
+  assert.equal(subagent.declaredSubagent, true);
+  assert.equal(subagent.clientVersion, "2.1.278.d48");
+  assert.equal(subagent.clientEntrypoint, "claude-vscode");
+  assert.equal(subagent.sessionId, "s9");
+  assert.equal(subagent.actorId, null, "the header declares a type, never an identity");
+});
+
+test("a main turn is not asserted to be main, only left undeclared", () => {
+  // Auxiliary calls also lack the flag, so absence must mean "not declared" rather than
+  // "this is the main agent".
+  const main = correlationOf({
+    system: [
+      { type: "text", text: "x-anthropic-billing-header: cc_version=2.1.278.fdc; cc_entrypoint=claude-vscode; You are" },
+    ],
+  });
+  assert.equal(main.declaredSubagent, false);
+  assert.equal(main.actorType, null);
+  assert.equal(main.clientVersion, "2.1.278.fdc");
+});
+
+test("an explicit metadata actor type still wins over the billing header", () => {
+  const both = correlationOf({
+    system: [{ type: "text", text: "x-anthropic-billing-header: cc_is_subagent=true;" }],
+    metadata: { user_id: JSON.stringify({ actor_type: "main", actor_id: "a-1" }) },
+  });
+  assert.equal(both.actorType, "main");
+});
+
+test("a system prompt with no billing header yields no client facts", () => {
+  const none = correlationOf({ system: "You are a helpful assistant.", messages: [] });
+  assert.equal(none.declaredSubagent, false);
+  assert.equal(none.clientVersion, null);
+  assert.equal(none.clientEntrypoint, null);
 });
 
 test("an unrecognised actor_type is dropped rather than trusted", () => {

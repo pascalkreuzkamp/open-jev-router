@@ -375,3 +375,106 @@ test("pruning never removes an actor with a decision in flight", async () => {
   await pending;
   assert.equal(registry.snapshot()[0].actors.length, 1);
 });
+
+const BILLING = (subagent) => [
+  {
+    type: "text",
+    text:
+      `x-anthropic-billing-header: cc_version=2.1.278.${subagent ? "d48" : "fdc"}; ` +
+      `cc_entrypoint=claude-vscode; ${subagent ? "cc_is_subagent=true; " : ""}You are a Claude agent.`,
+  },
+];
+
+const declared = ({ root, subagent, shape = "fresh" }) => {
+  const messages = [{ role: "user", content: root }];
+  if (shape === "continuation") {
+    messages.push(
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Bash", input: {} }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] },
+    );
+  }
+  return inspectClaudeRequest({
+    model: "jev-router",
+    tools: TOOLS,
+    system: BILLING(subagent),
+    metadata: { user_id: JSON.stringify({ session_id: "s-live" }) },
+    messages,
+  });
+};
+
+test("a client-declared subagent becomes its own actor without an actor id", () => {
+  // Real Claude Code declares the type but supplies no identity, so the task fingerprint has
+  // to serve as the key. Captured from 2.1.278 on 2026-09-22.
+  const registry = new ActorRegistry();
+  const main = registry.detect(declared({ root: "refactor the router", subagent: false }));
+  const sub = registry.detect(declared({ root: "explore the test directory", subagent: true }));
+
+  assert.equal(main.actorType, "main");
+  assert.equal(sub.actorType, "subagent");
+  assert.notEqual(sub.actorKey, main.actorKey);
+  assert.equal(sub.parentActorKey, main.actorKey, "the subagent hangs off the session's main actor");
+  assert.equal(sub.isFresh, true, "a declared subagent root is a routing boundary");
+});
+
+test("a subagent can never reach the main agent's pin, whatever its task text says", () => {
+  // This is the hazard that made splitting uncorrelated roots by prompt text unsafe. A
+  // declared subagent can only ever create or match a subagent actor, so the hazard is gone:
+  // even a subagent whose task text is identical to the main transcript root stays separate.
+  const registry = new ActorRegistry();
+  const main = registry.detect(declared({ root: "refactor the router", subagent: false }));
+  main.actor.pinnedRoute = route("claude-opus-5");
+
+  const impostor = registry.detect(declared({ root: "refactor the router", subagent: true }));
+
+  assert.equal(impostor.actorType, "subagent");
+  assert.notEqual(impostor.actorKey, main.actorKey);
+  assert.equal(main.actor.pinnedRoute.model, "claude-opus-5", "the main pin is untouched");
+  assert.equal(impostor.actor.pinnedRoute, null);
+});
+
+test("concurrent subagents with different tasks route independently", () => {
+  const registry = new ActorRegistry();
+  registry.detect(declared({ root: "main task", subagent: false }));
+  const a = registry.detect(declared({ root: "explore the test directory", subagent: true }));
+  const b = registry.detect(declared({ root: "summarise the changelog", subagent: true }));
+
+  assert.notEqual(a.actorKey, b.actorKey);
+  a.actor.pinnedRoute = route("claude-haiku-4-5-20251001");
+  b.actor.pinnedRoute = route("claude-opus-5");
+  assert.equal(a.actor.pinnedRoute.model, "claude-haiku-4-5-20251001");
+  assert.equal(b.actor.pinnedRoute.model, "claude-opus-5");
+});
+
+test("two subagents running the identical task share one route rather than colliding", () => {
+  // Without an id there is nothing to tell them apart, and the same task deserves the same
+  // model, so sharing is the correct answer here rather than a lost pin.
+  const registry = new ActorRegistry();
+  registry.detect(declared({ root: "main task", subagent: false }));
+  const first = registry.detect(declared({ root: "identical task", subagent: true }));
+  const second = registry.detect(declared({ root: "identical task", subagent: true }));
+
+  assert.equal(first.actorKey, second.actorKey);
+  assert.equal(second.actor.requestCount, 2);
+});
+
+test("a subagent continuation is not a routing boundary", () => {
+  const registry = new ActorRegistry();
+  registry.detect(declared({ root: "main task", subagent: false }));
+  registry.detect(declared({ root: "explore the tests", subagent: true }));
+  const continued = registry.detect(declared({ root: "explore the tests", subagent: true, shape: "continuation" }));
+
+  assert.equal(continued.actorType, "subagent");
+  assert.equal(continued.isFresh, false);
+  assert.equal(continued.actor.continuationCount, 1);
+});
+
+test("losing the billing header returns subagents to the previous behaviour, not to a broken one", () => {
+  // The header is an internal field and may disappear. If it does, a subagent request simply
+  // stops being recognised as its own root; nothing throws and nothing is misattributed.
+  const registry = new ActorRegistry();
+  registry.detect(declared({ root: "main task", subagent: false }));
+  const undeclared = registry.detect(request({ root: "explore the tests" }));
+
+  assert.notEqual(undeclared.actorType, "subagent");
+  assert.ok(["main", "unknown"].includes(undeclared.actorType));
+});

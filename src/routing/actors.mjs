@@ -110,6 +110,47 @@ export class ActorRegistry {
       };
     }
 
+    // Claude Code declares subagent calls in its billing header (`cc_is_subagent=true`) but
+    // gives them no id, so identity has to come from the task text. Splitting on task text is
+    // safe *here* in a way it is not for uncorrelated roots generally: a declared subagent can
+    // only ever create or match a subagent actor, so it cannot reach the main agent's pin no
+    // matter what its prompt says. That was the hazard the rule below guards against.
+    //
+    // Two subagents running different tasks get different keys and route independently. Two
+    // running the identical task share a key and therefore a route, which is the right answer
+    // rather than a collision: the same task deserves the same model.
+    if (correlation.declaredSubagent && request.firstMessageFingerprint) {
+      const actorKey = `sub:${request.firstMessageFingerprint}`;
+      let actor = session.actors.get(actorKey);
+      if (!actor) {
+        actor = newActor({
+          actorId: actorKey,
+          actorType: "subagent",
+          actorKey,
+          parentActorKey: session.mainActorKey,
+          agentName: correlation.agentName,
+          fingerprint: request.firstMessageFingerprint,
+        });
+        session.actors.set(actorKey, actor);
+      }
+      actor.lastSeenAt = now();
+      actor.requestCount += 1;
+      if (request.shape === "continuation") {
+        actor.continuationCount += 1;
+        actor.sawContinuationSinceDecision = true;
+      }
+      return {
+        actorType: "subagent",
+        actorKey,
+        parentActorKey: actor.parentActorKey,
+        isFresh: request.shape === "fresh",
+        confidence: "medium",
+        evidence: ["client declared subagent", "identity from task fingerprint"],
+        actor,
+        session,
+      };
+    }
+
     // A session's first observed inference root can safely establish its main actor. Later
     // roots without explicit correlation are not split by prompt text: two identical
     // concurrent subagents would otherwise collide and overwrite each other's pins.
