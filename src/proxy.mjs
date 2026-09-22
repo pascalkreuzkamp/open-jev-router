@@ -12,7 +12,7 @@ import {
 import { askJev } from "./router.mjs";
 import { debug } from "./log.mjs";
 import { boolEnv } from "./env.mjs";
-import { writeDecision, writeStatus } from "./status.mjs";
+import { writeDecision, writeDecisionOutcome, writeStatus } from "./status.mjs";
 import { dumpRequest } from "./dump.mjs";
 import { buildDecision } from "./decision.mjs";
 import { redactText } from "./sanitize.mjs";
@@ -193,36 +193,52 @@ export async function startProxy({
         actorId: null,
         routeId: null,
         classification: null,
+        statusKey: null,
         isContinuation: false,
         model: null,
         effort: null,
         startedAt: Date.now(),
       };
-      const observesMessages = telemetry.enabled && /^\/v1\/messages/.test(req.url ?? "");
+      const observesMessages = /^\/v1\/messages/.test(req.url ?? "");
+      const recordsTelemetry = telemetry.enabled && observesMessages;
       let telemetryFinished = false;
 
       async function recordOutcome({ observer = null, responseBytes = 0, httpStatus = null }) {
         if (!observesMessages || telemetryFinished) return;
         telemetryFinished = true;
-        try {
-          const usage = observer ? await observer.end() : null;
-          telemetry.noteRequest({
-            id: observed.requestId,
-            sessionId: observed.sessionId,
-            actorId: observed.actorId,
-            routeId: observed.routeId,
-            timestamp: observed.startedAt,
-            classification: observed.classification ?? "unknown",
-            isContinuation: observed.isContinuation ? 1 : 0,
+        // The stored explanation describes the fresh decision and the request on which it was
+        // enforced. Continuations and auxiliary traffic must not rewrite that decision view.
+        if (!observed.isContinuation && observed.classification?.endsWith("_fresh")) {
+          writeDecisionOutcome(observed.statusKey, observed.routeId, {
+            success: httpStatus >= 200 && httpStatus < 400,
+            httpStatus,
             model: observed.model,
             effort: observed.effort,
-            requestBytes: out.length,
-            responseBytes,
             latencyMs: Date.now() - observed.startedAt,
-            httpStatus,
-            success: httpStatus >= 200 && httpStatus < 400 ? 1 : 0,
+            responseBytes,
           });
-          telemetry.noteUsage(observed.requestId, usage);
+        }
+        try {
+          const usage = observer ? await observer.end() : null;
+          if (recordsTelemetry) {
+            telemetry.noteRequest({
+              id: observed.requestId,
+              sessionId: observed.sessionId,
+              actorId: observed.actorId,
+              routeId: observed.routeId,
+              timestamp: observed.startedAt,
+              classification: observed.classification ?? "unknown",
+              isContinuation: observed.isContinuation ? 1 : 0,
+              model: observed.model,
+              effort: observed.effort,
+              requestBytes: out.length,
+              responseBytes,
+              latencyMs: Date.now() - observed.startedAt,
+              httpStatus,
+              success: httpStatus >= 200 && httpStatus < 400 ? 1 : 0,
+            });
+            telemetry.noteUsage(observed.requestId, usage);
+          }
         } catch (err) {
           debug(`telemetry could not record this request: ${redactText(err.message)}`);
         }
@@ -239,6 +255,7 @@ export async function startProxy({
           // `claude -p` sends no session id, and `jev-explain` is given the conversation key.
           // The actor key is internal, so it only ever labels debug output.
           const statusKey = sessionOf(body) || conversationKey(body);
+          observed.statusKey = statusKey;
           const key = detection.actorKey ?? statusKey;
           dumpRequest(statusKey, body);
           body.tools?.forEach((t) => sanitizeSchema(t.input_schema));
@@ -257,7 +274,14 @@ export async function startProxy({
           if (classification === "manual_passthrough") {
             debug(`passthrough, user selected ${body.model}`);
             if (detection.actor) {
-              writeStatus(sessionOf(body), { manual: true, at: Date.now() });
+              writeStatus(sessionOf(body), {
+                manual: true,
+                model: body.model,
+                actorType: detection.actorType,
+                actorName: detection.actor?.agentName ?? null,
+                requestClassification: classification,
+                at: Date.now(),
+              });
             }
           } else if (classification === "auxiliary") {
             const policy = auxiliaryPolicy();
@@ -375,6 +399,7 @@ export async function startProxy({
               // so recording it here would inflate every per-route figure downstream.
               if (!routed.reused && routed.route) {
                 routed.route.telemetryRouteId ??= telemetry.newId();
+                routed.decision.routeId = routed.route.telemetryRouteId;
                 telemetry.noteRoute({
                   sessionId: observed.sessionId,
                   actorId: observed.actorId,
@@ -504,16 +529,17 @@ export async function startProxy({
           // Usage is read from a copy of the bytes, never from the bytes themselves: the
           // response is piped through untouched, so nothing here can change what Claude Code
           // receives, and an observer failure cannot interrupt the stream.
-          const observer = isMessages
+          const observer = recordsTelemetry
             ? createUsageObserver({
                 contentType: up.headers["content-type"] ?? "",
                 contentEncoding: up.headers["content-encoding"] ?? null,
               })
             : null;
-          if (observer) {
+          if (isMessages) {
             let responseBytes = 0;
             up.on("data", (chunk) => {
               responseBytes += chunk.length;
+              if (!observer) return;
               try {
                 observer.write(chunk);
               } catch {

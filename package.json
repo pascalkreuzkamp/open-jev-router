@@ -10,12 +10,13 @@
   "homepage": "https://github.com/gargpratyush/jev-router#readme",
   "bugs": "https://github.com/gargpratyush/jev-router/issues",
   "bin": {
+    "jev": "bin/jev.mjs",
     "jev-claude": "bin/jev-claude.mjs",
     "jev-codex": "bin/jev-codex.mjs",
     "jev-explain": "bin/jev-explain.mjs"
   },
   "scripts": {
-    "test": "node --test test/codex.test.mjs test/explain.test.mjs test/fixtures.test.mjs test/integration/effort-routing.test.mjs test/integration/openrouter-provider.test.mjs test/integration/subagent-routing.test.mjs test/integration/telemetry.test.mjs test/policy.test.mjs test/privacy.test.mjs test/proxy.test.mjs test/settings.test.mjs test/unit/claude/adapter.test.mjs test/unit/claude/classify.test.mjs test/unit/claude/transform.test.mjs test/unit/providers/openrouter.test.mjs test/unit/providers/select.test.mjs test/unit/providers/typesafe.test.mjs test/unit/routing/actors.test.mjs test/unit/routing/capabilities.test.mjs test/unit/routing/profiles.test.mjs test/unit/routing/select.test.mjs test/unit/telemetry/config.test.mjs test/unit/telemetry/recorder.test.mjs test/unit/telemetry/store.test.mjs test/unit/telemetry/usage.test.mjs",
+    "test": "node --test test/codex.test.mjs test/explain.test.mjs test/fixtures.test.mjs test/integration/cli-stats.test.mjs test/integration/effort-routing.test.mjs test/integration/openrouter-provider.test.mjs test/integration/subagent-routing.test.mjs test/integration/telemetry.test.mjs test/policy.test.mjs test/privacy.test.mjs test/proxy.test.mjs test/settings.test.mjs test/unit/claude/adapter.test.mjs test/unit/claude/classify.test.mjs test/unit/claude/transform.test.mjs test/unit/providers/openrouter.test.mjs test/unit/providers/select.test.mjs test/unit/providers/typesafe.test.mjs test/unit/routing/actors.test.mjs test/unit/routing/capabilities.test.mjs test/unit/routing/profiles.test.mjs test/unit/routing/select.test.mjs test/unit/telemetry/config.test.mjs test/unit/telemetry/recorder.test.mjs test/unit/telemetry/store.test.mjs test/unit/telemetry/usage.test.mjs test/unit/ui/reports.test.mjs test/unit/ui/session.test.mjs test/unit/ui/statusline.test.mjs",
     "prepublishOnly": "npm test"
   },
   "files": [

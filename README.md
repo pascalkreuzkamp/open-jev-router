@@ -8,6 +8,7 @@ interface, tools, sessions, permissions, and authentication.
 | --- | --- | --- | --- |
 | `jev-claude` | Claude Code | Existing `claude login` | Status line |
 | `jev-codex` | OpenAI Codex | Existing `codex login` | Commentary line |
+| `jev stats` / `jev routes` | Local telemetry | None | Read-only reports |
 
 Both commands launch the real upstream CLI. Jev only chooses the model for a fresh user turn.
 
@@ -58,8 +59,8 @@ jev-codex resume --last
 jev-codex exec "fix the failing test"
 ```
 
-For a local checkout, `npm link` installs both commands. Without it, run
-`node bin/jev-claude.mjs` or `node bin/jev-codex.mjs`.
+For a local checkout, `npm link` installs both launchers and the `jev` report command. Without
+it, run `node bin/jev-claude.mjs`, `node bin/jev-codex.mjs`, or `node bin/jev.mjs`.
 
 ## Claude Code interface
 
@@ -68,10 +69,12 @@ For a local checkout, `npm link` installs both commands. Without it, run
 `jev-claude` launches Claude Code with **Jev Router** selected in `/model`. Selecting another
 model pauses routing; selecting **Jev Router** resumes it.
 
-The injected status line shows the model used for the last turn:
+The injected status line shows the active actor, effective model/effort, confidence, unusual
+fallbacks, and a compact distribution of recent fresh decisions:
 
 ```text
-⚡ haiku p=0.98 · my-project · 8% context
+main claude-opus-5/high (p=0.93) · H 61%/S 28%/O 11% · my-project · 8% context
+subagent:Explore claude-haiku-4-5/default (p=0.97) · H 67%/O 33% · my-project · 55% context
 ⏸ manual Opus 4.6 · my-project · 21% context
 ```
 
@@ -84,32 +87,29 @@ The explanation skill is bundled with the npm package and loaded automatically: 
 the last routing decision:
 
 ```text
-┌─────────────────────────────────┐
-│ Jev Router                      │
-│                                 │
-│ Jev request                     │
-│ Prompt: not recorded (see       │
-│ JEV_STORE_PROMPTS)              │
-│ Current tier: HAIKU             │
-│ Context tokens: 6200            │
-│                                 │
-│ Jev response                    │
-│ Task complexity     0.82        │
-│ Reasoning required  0.91        │
-│ Tool complexity     0.64        │
-│ Context size        0.31        │
-│                                 │
-│ Recommended tier: SONNET        │
-│ Selected model: SONNET          │
-│                                 │
-│ Confidence: 94%                 │
-│ Decision: Jev recommendation    │
-└─────────────────────────────────┘
+Jev Router
+Actor
+  Type: subagent
+  Name: Explore
+Request
+  Classification: subagent_fresh
+Jev
+  Provider: openrouter
+  Confidence: 94%
+Recommendation
+  Profile: haiku-default
+Effective route
+  Selected model: CLAUDE-HAIKU-4-5
+  Effective effort: DEFAULT
+Upstream outcome
+  Status: succeeded
 ```
 
-The report is rendered locally from the normalized fields saved when routing occurred: tier,
-confidence, per-request metrics, and (by default) a hash of the prompt rather than the prompt
-itself. Recent decisions are retained per CLI session; invoking the explanation skill does not
+The report is rendered locally from the normalized fields saved when routing occurred. It
+separates the actor and request classification, Jev recommendation, effective enforced route,
+and observed upstream outcome. Missing confidence or outcome data is shown as unavailable,
+including for status files written by older releases. By default only a hash of the prompt is
+saved. Recent decisions are retained per CLI session; invoking the explanation skill does not
 ask Jev to score the prompt again.
 
 ### Explanation data location
@@ -340,9 +340,38 @@ unless `JEV_STORE_PROMPT_PREVIEW=1` or `JEV_STORE_PROMPTS=1` is set. Credentials
 persisted.
 
 Telemetry needs the optional native dependency `better-sqlite3`. If it is not installed (or
-cannot build on your platform), the router runs normally and telemetry stays off. Reading and
-aggregation live in `src/telemetry/read.mjs`; the CLI tables and dashboard that present them
-are a later change.
+cannot build on your platform), the router runs normally and telemetry stays off.
+
+### Local statistics and route history
+
+The `jev` command reads the SQLite database locally and never contacts Jev, Anthropic, or
+OpenAI:
+
+```bash
+jev stats
+jev stats --session current
+jev stats --session <id>
+jev stats --project .
+jev stats --json
+jev routes --session current
+jev routes --session <id> --json
+```
+
+`current` first uses an available caller session identity. Otherwise it selects the sole active
+session for the current project, or the most recent ended session. If several sessions are
+active, the command lists their IDs and requires `--session` instead of guessing. `--project`
+aggregates exact recorded project paths.
+
+Stats count fresh routing decisions separately from continuation and auxiliary requests. Token
+totals are labeled partial when any request lacks usage, and provider cost means actual Jev
+routing cost only. Claude token counts are subscription usage; they are not an API-price or
+subscription-billing estimate.
+
+JSON output is stdout-only and uses report `schemaVersion: 1`. A stats document has the stable
+top-level keys `schemaVersion`, `kind`, `scope`, `period`, `routes`, `actors`, `usage`, `jev`,
+and `fallbacks`; a routes document has `schemaVersion`, `kind`, `scope`, and `routes`. Unknown
+numeric data is `null`, not zero. Errors are JSON objects with `ok: false`, `code`, and
+`message`; human-readable errors go to stderr.
 
 ## Configuration
 

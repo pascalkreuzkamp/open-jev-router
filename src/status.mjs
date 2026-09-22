@@ -43,6 +43,24 @@ export function writeDecision(sessionId, decision) {
   writeStatus(sessionId, { ...decision, history });
 }
 
+/** Attach the observed upstream result without replacing a newer actor's decision. */
+export function writeDecisionOutcome(sessionId, routeId, outcome) {
+  if (!sessionId || !routeId) return;
+  const previous = readStatus(sessionId);
+  if (!previous) return;
+  const matchesLatest = previous.routeId === routeId;
+  const matchesHistory = (previous.history ?? []).some((entry) => entry.routeId === routeId);
+  if (!matchesLatest && !matchesHistory) return;
+  const history = (previous.history ?? []).map((entry) =>
+    entry.routeId === routeId ? { ...entry, upstreamOutcome: outcome } : entry,
+  );
+  writeStatus(sessionId, {
+    ...previous,
+    ...(matchesLatest ? { upstreamOutcome: outcome } : {}),
+    history,
+  });
+}
+
 /** Latest routing decision for a session, or null if none has been made yet. */
 export function readStatus(sessionId) {
   try {
