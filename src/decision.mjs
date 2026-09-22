@@ -36,6 +36,14 @@ export function buildDecision({
     recommendedTier,
     currentModel,
     contextTokens,
+    // Provider metadata only (FR-002/A13): never the raw request/response, which embed the
+    // prompt (`jev.request.state.request`) and are not persisted at any storage tier.
+    provider: jev?.provider ?? null,
+    decisionId: jev?.decisionId ?? null,
+    configuredModel: jev?.configuredModel ?? null,
+    resolvedModel: jev?.resolvedModel ?? null,
+    usage: jev?.usage ?? null,
+    cost: jev?.cost ?? null,
     promptHash: createHash("sha256").update(prompt).digest("hex"),
     at: Date.now(),
   };

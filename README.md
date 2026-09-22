@@ -199,6 +199,36 @@ Claude Code uses `ANTHROPIC_BASE_URL`; Codex uses a temporary custom provider wi
 routing sentinel.
 Any concrete model selected by the user passes through unchanged.
 
+## Jev provider
+
+Jev itself can be reached two ways, behind one internal `JevProvider` interface
+(`src/providers/`) so the rest of the router does not know which one is active:
+
+| Provider | Transport | Enable with |
+| --- | --- | --- |
+| Direct TypeSafe | `@typesafe-ai/sdk`, `POST /v1/systemone` | `JEV_API_KEY` (or `TYPESAFE_API_KEY`) |
+| OpenRouter | Native `fetch`, `POST /api/alpha/decisions` (the [OpenRouter Decisions API](https://openrouter.ai/docs/api/api-reference/alphadecisions/submit-a-decisions-questions-and-answers-request), alpha) | `OPENROUTER_API_KEY` |
+
+Selection order, checked once per launch:
+
+1. `JEV_PROVIDER=openrouter` or `JEV_PROVIDER=typesafe`, if set, always wins. An unknown value,
+   or a provider selected without its key, is a visible startup message and unrouted operation
+   -- never a silent fall-through to whichever other key happens to be set.
+2. Otherwise `OPENROUTER_API_KEY`, if present, prefers OpenRouter.
+3. Otherwise `JEV_API_KEY`/`TYPESAFE_API_KEY`, if present, uses direct TypeSafe.
+4. Otherwise routing is unavailable and both launchers run the real CLI unrouted.
+
+Both adapters normalize their response into the same shape (chosen model, confidence,
+probabilities, task-complexity metrics, decision id, configured/resolved model, token usage,
+cost when the provider reports it) and sort every failure into one of `auth_error`,
+`rate_limited`, `timeout`, `network_error`, `invalid_response`, `provider_error`, or
+`unknown_error`. Any failure returns `null` to the policy layer -- routing fails open, never
+blocking the turn it was supposed to speed up (see Limitations).
+
+At startup, `jev-claude` runs a bounded, unpaid `healthCheck()` against the selected
+provider (OpenRouter's `GET /api/v1/key`, or TypeSafe's `GET /v1/models`) and prints a warning
+if it fails, without delaying or blocking the session.
+
 ## Routing policy
 
 One Jev call per fresh user turn selects a shared abstract tier:
@@ -226,7 +256,11 @@ sub-agents are pinned separately. Routing is fail-open: Jev failure never blocks
 
 | Variable | Interface | Effect |
 | --- | --- | --- |
-| `JEV_API_KEY` | Both | Enables routing. `TYPESAFE_API_KEY` also works. |
+| `JEV_API_KEY` | Both | Enables direct-TypeSafe routing. `TYPESAFE_API_KEY` also works. |
+| `OPENROUTER_API_KEY` | Both | Enables OpenRouter routing (preferred over a TypeSafe key when both are set and `JEV_PROVIDER` is unset). |
+| `JEV_PROVIDER` | Both | Forces `openrouter` or `typesafe`, instead of the automatic key-based preference. An unknown value or a missing key for the forced provider disables routing visibly rather than falling back to another key. |
+| `JEV_OPENROUTER_MODEL` | Both | Jev model alias requested from OpenRouter; defaults to `typesafe/jev-latest`. |
+| `JEV_TIMEOUT_MS` | Both | Total wall-clock deadline for one Jev decision (request plus any retry); defaults to `1500`. A routing outage never stalls the turn longer than this. |
 | `JEV_ALLOW_FABLE` | Both | Enables the opt-in long tier. |
 | `JEV_DEBUG` | Both | Logs decisions and rewrites to `~/.jev-claude.log` in interactive sessions. Accepts only `1`/`true`; `0` is off. |
 | `JEV_DUMP` | Both | Dumps sanitized, content-omitted wire shapes to `~/.jev-router/dumps/<session>/<id>.json` for debugging format changes. Accepts only `1`/`true`. |
@@ -277,7 +311,13 @@ injection, and decision display.
 
 ## Limitations
 
-- The user's prompt text is sent to TypeSafe for the routing decision. Nothing else is.
+- The user's fresh task text is sent to whichever Jev provider is active (TypeSafe directly,
+  or OpenRouter) for the routing decision. Full tool output and repository contents are not
+  sent by default; `jev-claude` prints this when routing starts.
+- The OpenRouter Decisions API is an alpha endpoint; its shape and the `typesafe/jev-latest`
+  alias have not been verified against a live account in this codebase, only against current
+  published documentation. Treat OpenRouter routing as unverified until exercised with a real
+  key.
 - Jev adds latency only to the first request of a turn; tool-loop continuations add none.
 - Claude Code and Codex request formats are not public contracts. Set `JEV_DUMP=1` to diagnose
   upstream changes from sanitized wire dumps under `~/.jev-router/dumps`.

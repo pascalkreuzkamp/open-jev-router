@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CODEX_AUTO_MODEL, startCodexProxy } from "./codex-proxy.mjs";
+import { hasAnyProviderKey } from "./providers/select.mjs";
 
 const PROVIDER = "jev";
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -93,14 +94,14 @@ export async function runCodex() {
   let close = () => {};
   const statusId = `codex-${process.pid}`;
   process.env.JEV_CODEX_STATUS_ID = statusId;
-  if (process.env.JEV_API_KEY || process.env.TYPESAFE_API_KEY) {
+  if (hasAnyProviderKey()) {
     const proxy = await startCodexProxy({ statusId });
     close = proxy.close;
     args = codexArgs(`http://127.0.0.1:${proxy.port}`, args);
   } else {
     process.stderr.write(
-      "[jev] no JEV_API_KEY found - starting Codex without routing\n" +
-        `[jev] add JEV_API_KEY=... to ${join(homedir(), ".jev-router.env")} and restart jev-codex\n`,
+      "[jev] no provider key found - starting Codex without routing\n" +
+        `[jev] add OPENROUTER_API_KEY, JEV_API_KEY, or TYPESAFE_API_KEY to ${join(homedir(), ".jev-router.env")} and restart jev-codex\n`,
     );
   }
 

@@ -253,7 +253,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
                 contextTokens,
               });
               debug(
-                `${key} ${jev ? `${jev.ms}ms p=${jev.confidence.toFixed(2)}` : "no-jev"} ` +
+                `${key} ${jev ? `${jev.ms}ms p=${jev.confidence == null ? "n/a" : jev.confidence.toFixed(2)}` : "no-jev"} ` +
                   `${current} -> ${tier} (${reason}) ctx~${contextTokens} | prompt ${fresh.promptHash.slice(0, 12)}`,
               );
             }
