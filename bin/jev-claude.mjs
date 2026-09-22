@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { readFileSync, writeFileSync, mkdirSync, accessSync, constants } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startProxy } from "../src/proxy.mjs";
-import { AUTO_MODEL } from "../src/config.mjs";
+import { proxyEnv, resolveExecutable, spawnArgs } from "../src/launch.mjs";
 import { readSavedModel, restoreSavedModel } from "../src/settings.mjs";
 import { LOG_FILE } from "../src/log.mjs";
 import { boolEnv } from "../src/env.mjs";
@@ -14,30 +14,6 @@ import { loadCredentialFiles } from "../src/credentials.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
-
-/**
- * Registers "Jev Router" as an extra row in Claude Code's /model picker and starts the session
- * on it. Claude Code sends the id verbatim because it does not validate model names behind a
- * custom base URL, which is what lets the proxy tell "route this" from "the user picked a
- * model". Capabilities are declared so Claude Code still composes thinking and effort for
- * the tiers that support them; the proxy strips what the routed model cannot accept.
- */
-function autoModelEnv() {
-  const env = {
-    ANTHROPIC_CUSTOM_MODEL_OPTION: AUTO_MODEL,
-    ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: "Jev Router",
-    ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION: "Route each turn to the cheapest model that can do it",
-    ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES:
-      "thinking,adaptive_thinking,interleaved_thinking,effort,max_effort",
-    // Some Claude Code versions validate the model client-side before it reaches the proxy;
-    // this defers to the API so "jev-router" can pass through for rewriting.
-    CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT: "1",
-  };
-  // ANTHROPIC_MODEL applies to this session only and is never written to settings, so the
-  // default costs the user nothing permanent. A model they set themselves still wins.
-  if (!process.env.ANTHROPIC_MODEL) env.ANTHROPIC_MODEL = AUTO_MODEL;
-  return env;
-}
 
 /**
  * Claude Code saves a picker row chosen with Enter as the default for new sessions, so the
@@ -77,35 +53,11 @@ function statusLineArgs() {
 // the legacy Claude-specific file.
 loadCredentialFiles();
 
-/**
- * Finds the Claude Code executable on PATH. Resolving it here rather than leaning on the
- * shell means arguments are passed as an array (no quoting hazard, no DEP0190 warning) and
- * a missing install produces a useful message instead of a shell error. Older npm-based
- * installs are a `.cmd` shim, which Node still refuses to run without a shell.
- */
-function resolveClaude() {
-  const win = process.platform === "win32";
-  const exts = win ? (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";") : [""];
-  for (const dir of (process.env.PATH ?? "").split(win ? ";" : ":")) {
-    if (!dir) continue;
-    for (const ext of exts) {
-      const file = join(dir.replace(/^"|"$/g, ""), `claude${ext}`);
-      try {
-        accessSync(file, constants.X_OK);
-        return { file, shell: /\.(cmd|bat)$/i.test(file) };
-      } catch {
-        // Not here; keep looking.
-      }
-    }
-  }
-  return null;
-}
-
 const args = process.argv.slice(2);
 args.push("--add-dir", ROOT);
 const env = { ...process.env };
 
-const claude = resolveClaude();
+const claude = resolveExecutable("claude");
 if (!claude) {
   process.stderr.write(
     "[jev] Claude Code is not installed, or `claude` is not on your PATH.\n" +
@@ -121,9 +73,7 @@ let shutdownProxy = null;
 if (hasAnyProviderKey()) {
   const { port, close, telemetry } = await startProxy();
   shutdownProxy = close;
-  env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${port}`;
-  env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY = "1";
-  Object.assign(env, autoModelEnv());
+  Object.assign(env, proxyEnv(`http://127.0.0.1:${port}`));
   process.on("exit", () => {
     // A synchronous safety net for an abrupt exit. The normal path awaits `close()` below,
     // which also flushes telemetry; this only guarantees the saved model is restored.
@@ -168,7 +118,7 @@ if (hasAnyProviderKey()) {
 }
 
 // On Windows a `.cmd` shim still needs a shell; a real executable does not.
-const child = spawn(claude.file, claude.shell ? args.map((a) => (/\s/.test(a) ? `"${a}"` : a)) : args, {
+const child = spawn(claude.file, spawnArgs(claude, args), {
   stdio: "inherit",
   shell: claude.shell,
   env,

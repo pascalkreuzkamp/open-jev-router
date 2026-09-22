@@ -138,9 +138,11 @@ verified instance.
 
 ## VS Code status
 
-**Experimental.** The Claude Code VS Code extension is not a supported configuration for this
-release. No extension version has been tested end to end against the router, and the launcher
-sets its environment for a child process, which the extension does not necessarily inherit.
+**Experimental.** No VS Code / Claude Code extension combination has passed the live protocol
+yet. `jev vscode doctor` checks the setup and suggests extension settings, and `jev-code` opens
+VS Code pointed at the daemon, but routing only counts as proven once the daemon has actually
+seen requests. See [VS Code compatibility](vscode-compatibility.md) for the tested-combination
+table and the protocol that would promote a combination to supported.
 
 **Supported:** running `jev-claude` in VS Code's integrated terminal, which is an ordinary
 CLI session.
@@ -184,4 +186,4 @@ Specifically still unverified at the time of writing:
   identity uses synthetic correlation metadata, because no captured Claude Code request is
   known to carry actor fields. The classifier fails open when they are absent.
 - A real account's Claude model catalog and capability behaviour.
-- Any VS Code extension version.
+- Any VS Code extension version (see [VS Code compatibility](vscode-compatibility.md)).

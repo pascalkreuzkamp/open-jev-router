@@ -43,6 +43,13 @@ const options = {
     provider: selected.status === "ok" ? selected.provider.name : selected.name ?? "unavailable",
     provider_key_available: hasAnyProviderKey(env),
     telemetry: Boolean(proxy?.telemetry?.enabled),
+    traffic: proxy?.traffic
+      ? {
+          messages: proxy.traffic.messages,
+          routed: proxy.traffic.routed,
+          last_message_at: proxy.traffic.lastMessageAt,
+        }
+      : null,
   }),
   onShutdown: () => shutdown(),
 };
