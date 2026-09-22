@@ -74,6 +74,36 @@ test("sends the Decisions API shape and normalizes a successful answer", async (
   assert.ok(result.raw);
 });
 
+test("profiles mode sends only validated profile choices", async (t) => {
+  let seenBody;
+  const server = jsonServer((req, res, body) => {
+    seenBody = body;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      ...VALID_DECISION,
+      answers: {
+        ...VALID_DECISION.answers,
+        model: { type: "choice", choice: "sonnet-low", confidence: 0.9 },
+      },
+    }));
+  });
+  const baseURL = await listening(server);
+  t.after(() => server.close());
+  const provider = createOpenRouterProvider({ apiKey: "sk-or-test", model: "typesafe/jev-latest", baseURL });
+  const profiles = [{
+    id: "sonnet-low",
+    model: "claude-sonnet-5",
+    tier: "balanced",
+    effort: "low",
+  }];
+
+  const result = await provider.route({ ...ROUTE_INPUT, profiles, decisionMode: "profiles" });
+
+  assert.equal(result.choice, "sonnet-low");
+  assert.deepEqual(seenBody.state.environment.available_profiles, ["sonnet-low"]);
+  assert.deepEqual(Object.keys(seenBody.questions.model.criteria), ["sonnet-low"]);
+});
+
 test("missing confidence/cost/usage normalize to null, never a manufactured value", async (t) => {
   const server = jsonServer((req, res) => {
     res.setHeader("content-type", "application/json");
@@ -101,6 +131,27 @@ test("missing confidence/cost/usage normalize to null, never a manufactured valu
   assert.deepEqual(result.usage, { inputTokens: null, outputTokens: null });
   assert.equal(result.decisionId, null);
   assert.equal(result.resolvedModel, null);
+});
+
+test("an out-of-range legacy score is rejected as an invalid response", async (t) => {
+  const server = jsonServer((req, res) => {
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      ...VALID_DECISION,
+      answers: {
+        ...VALID_DECISION.answers,
+        reasoning_required: { type: "score", score: 10 },
+      },
+    }));
+  });
+  const baseURL = await listening(server);
+  t.after(() => server.close());
+  const provider = createOpenRouterProvider({ apiKey: "sk-or-test", model: "typesafe/jev-latest", baseURL });
+
+  const result = await provider.route(ROUTE_INPUT);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.category, "invalid_response");
 });
 
 for (const [status, category] of [

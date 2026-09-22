@@ -11,11 +11,13 @@ export function normalizeAnswers(body, { contextTokens }) {
   const answers = body?.answers;
   const model = answers?.model;
   const { task_complexity, reasoning_required, tool_complexity } = answers ?? {};
+  const validScore = (value) =>
+    Number.isInteger(value) && value >= 0 && value <= COMPLEXITY_MAX_SCORE;
   if (
     typeof model?.choice !== "string" ||
-    typeof task_complexity?.score !== "number" ||
-    typeof reasoning_required?.score !== "number" ||
-    typeof tool_complexity?.score !== "number"
+    !validScore(task_complexity?.score) ||
+    !validScore(reasoning_required?.score) ||
+    !validScore(tool_complexity?.score)
   ) {
     return null;
   }

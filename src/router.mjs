@@ -19,14 +19,29 @@ import { redactText } from "./sanitize.mjs";
  *   provider: string, request: object, raw: object, ms: number,
  * }>}
  */
-export async function askJev({ prompt, current, contextTokens, models, env = process.env }) {
+export async function askJev({
+  prompt,
+  current,
+  contextTokens,
+  models,
+  profiles = [],
+  decisionMode = "signals",
+  env = process.env,
+}) {
   if (!models?.length) return null;
   const selected = selectProvider(env);
   if (selected.status !== "ok") {
     log(`routing unavailable (${unavailableMessage(selected)}), keeping ${current}`);
     return null;
   }
-  const result = await selected.provider.route({ prompt, current, contextTokens, models });
+  const result = await selected.provider.route({
+    prompt,
+    current,
+    contextTokens,
+    models,
+    profiles,
+    decisionMode,
+  });
   if (!result.ok) {
     // A provider error may echo the request or a header back in its message.
     log(`routing failed (${result.category}), keeping ${current}: ${redactText(result.message)}`);

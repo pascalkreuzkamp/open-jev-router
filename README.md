@@ -231,7 +231,9 @@ if it fails, without delaying or blocking the session.
 
 ## Routing policy
 
-One Jev call per fresh user turn selects a shared abstract tier:
+One Jev call per fresh user turn selects a route. Claude uses capability-validated
+model/effort profiles by default; Codex continues to map the same tier vocabulary to its
+native model and reasoning controls:
 
 | Tier | Claude Code default | Codex default |
 | --- | --- | --- |
@@ -240,14 +242,28 @@ One Jev call per fresh user turn selects a shared abstract tier:
 | Strong | Opus | `gpt-5.6-sol` |
 | Long | Fable | `gpt-6-astra` |
 
-`src/policy.mjs` then applies these rules:
+The local policy then applies these rules:
 
 - explicit requests such as `use opus`, `use luna`, or `use strong` win;
 - failure, timeout, or an unrecognised Jev answer keeps the current model;
-- low confidence never downgrades and caps upgrades at the balanced tier;
+- confidence below `0.45` never downgrades and caps upgrades at the balanced tier;
 - large conversations refuse downgrades that would waste more prompt-cache work than they save;
 - unavailable tiers step upward rather than silently choosing a weaker model;
-- the long tier is disabled unless `JEV_ALLOW_FABLE=1`.
+- the long tier is disabled unless `JEV_ALLOW_LONG_TIER=1` (legacy `JEV_ALLOW_FABLE=1` also works).
+
+For Claude, the signed-in account catalog is resolved into profiles such as `sonnet-low`,
+`sonnet-medium`, and `opus-high`. The versioned capability matrix validates the selected
+model before the proxy merges `output_config.effort` and normalizes incompatible thinking
+fields. Unknown model capabilities are not guessed: existing controls are preserved and the
+route fails open. Set `JEV_DECISION_MODE=signals` to retain the original exact-model choice
+plus normalized 0–9 reasoning-score mapping.
+
+The bundled matrix was verified on 2026-09-22 against Anthropic's
+[Models API](https://platform.claude.com/docs/en/api/models/list),
+[effort](https://platform.claude.com/docs/en/build-with-claude/effort), and
+[thinking](https://platform.claude.com/docs/en/build-with-claude/extended-thinking)
+documentation. Runtime effort capabilities returned by the signed-in account take precedence;
+validated exact-model overrides cover private or newer catalog entries.
 
 Tool-loop continuations keep the tier chosen at the start of the turn. Main conversations and
 sub-agents are pinned separately. Routing is fail-open: Jev failure never blocks the CLI.
@@ -261,7 +277,13 @@ sub-agents are pinned separately. Routing is fail-open: Jev failure never blocks
 | `JEV_PROVIDER` | Both | Forces `openrouter` or `typesafe`, instead of the automatic key-based preference. An unknown value or a missing key for the forced provider disables routing visibly rather than falling back to another key. |
 | `JEV_OPENROUTER_MODEL` | Both | Jev model alias requested from OpenRouter; defaults to `typesafe/jev-latest`. |
 | `JEV_TIMEOUT_MS` | Both | Total wall-clock deadline for one Jev decision (request plus any retry); defaults to `1500`. A routing outage never stalls the turn longer than this. |
-| `JEV_ALLOW_FABLE` | Both | Enables the opt-in long tier. |
+| `JEV_DECISION_MODE` | Claude | `profiles` (default) lets Jev choose a validated model/effort profile; `signals` maps the original model and normalized reasoning signals locally. |
+| `JEV_CONFIDENCE_LOW` / `JEV_CONFIDENCE_HIGH` | Claude | Confidence boundaries; default to `0.45` / `0.80`. |
+| `JEV_ENABLE_EFFORT_ROUTING` | Claude | Enables effort profiles by default; set `0`/`false` for model-only profiles. |
+| `JEV_CLAUDE_FAST_MODEL` / `JEV_CLAUDE_BALANCED_MODEL` / `JEV_CLAUDE_STRONG_MODEL` / `JEV_CLAUDE_LONG_MODEL` | Claude | Select an exact model from the signed-in account catalog for a tier. An unavailable override disables that tier rather than inventing availability. |
+| `JEV_ALLOW_LONG_TIER` | Both | Enables the opt-in long tier. |
+| `JEV_ALLOW_FABLE` | Both | Legacy alias for `JEV_ALLOW_LONG_TIER`. |
+| `JEV_CAPABILITY_OVERRIDES` | Claude | Advanced JSON object keyed by an exact catalog model id. Each entry must declare `supportedEfforts` and all four thinking booleans; malformed entries are rejected. |
 | `JEV_DEBUG` | Both | Logs decisions and rewrites to `~/.jev-claude.log` in interactive sessions. Accepts only `1`/`true`; `0` is off. |
 | `JEV_DUMP` | Both | Dumps sanitized, content-omitted wire shapes to `~/.jev-router/dumps/<session>/<id>.json` for debugging format changes. Accepts only `1`/`true`. |
 | `JEV_DUMP_CONTENT` | Both | Includes message/system/instructions text in a `JEV_DUMP` dump (still redacted for secrets). |
@@ -276,17 +298,18 @@ sub-agents are pinned separately. Routing is fail-open: Jev failure never blocks
 Existing environment variables have highest precedence, followed by `.env` in the launch
 directory, `~/.jev-router.env`, and the legacy `~/.jev-claude.env`.
 
-Tier definitions, Jev's question, confidence thresholds, and timeouts live in `src/config.mjs`.
-Both launchers send Jev the exact models in the signed-in account's native catalog, so model
-versions such as `claude-opus-4-8` and `claude-opus-5` remain separate choices. Static model
-ids are used only until the CLI fetches its catalog.
+Tier definitions, Jev's question, confidence thresholds, and timeouts live in `src/config.mjs`;
+versioned Claude capabilities and profiles live under `src/routing/`. Both launchers use the
+signed-in account's native catalog, so model versions such as `claude-opus-4-8` and
+`claude-opus-5` remain separate choices. Static model ids are used only until the CLI fetches
+its catalog.
 
 ## Compatibility notes
 
 - Claude Code needs schema normalisation for older MCP JSON Schema fields when a custom base
   URL is active.
-- Claude request fields unsupported by a routed tier, such as adaptive thinking on Haiku,
-  are removed before forwarding.
+- Claude request transformation preserves messages, tools, metadata, beta headers, and
+  unrelated `output_config` fields. Only unsupported effort/thinking fields are normalized.
 - Codex's current request format stores tool definitions inside its Responses API input.
 - Codex's ChatGPT backend may stream SSE without a `Content-Type` header; the proxy detects
   the event stream from its first frame.

@@ -69,6 +69,36 @@ test("sends the SDK's own systemone shape and normalizes a successful answer", a
   assert.ok(Number.isFinite(result.metrics.taskComplexity));
 });
 
+test("profiles mode sends profile ids through the direct provider", async (t) => {
+  let seenBody;
+  const server = jsonServer((req, res, body) => {
+    seenBody = body;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      ...VALID_ANSWER,
+      answers: {
+        ...VALID_ANSWER.answers,
+        model: { type: "choice", choice: "sonnet-high", confidence: 0.9 },
+      },
+    }));
+  });
+  const baseURL = await listening(server);
+  t.after(() => server.close());
+  const provider = createTypeSafeProvider({ apiKey: "ts-key", baseURL });
+  const profiles = [{
+    id: "sonnet-high",
+    model: "claude-sonnet-5",
+    tier: "balanced",
+    effort: "high",
+  }];
+
+  const result = await provider.route({ ...ROUTE_INPUT, profiles, decisionMode: "profiles" });
+
+  assert.equal(result.choice, "sonnet-high");
+  assert.deepEqual(seenBody.state.environment.available_profiles, ["sonnet-high"]);
+  assert.deepEqual(Object.keys(seenBody.questions.model.criteria), ["sonnet-high"]);
+});
+
 for (const [status, category] of [
   [401, "auth_error"],
   [429, "rate_limited"],

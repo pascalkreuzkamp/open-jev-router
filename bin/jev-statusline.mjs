@@ -29,6 +29,7 @@ if (status?.manual) {
 } else if (status) {
   const color = COLOR[status.tier] ?? "";
   const p = status.confidence != null ? ` ${DIM}(p=${status.confidence.toFixed(2)})${RESET}` : "";
+  const effort = status.effectiveEffort ? `/${status.effectiveEffort}` : "";
   // Only name the reason when routing declined to do the obvious thing, so the common case
   // stays short and the interesting case explains itself.
   const held =
@@ -37,7 +38,7 @@ if (status?.manual) {
     status.reason !== "jev/no-change" &&
     !status.reason.includes("override");
   const why = held ? ` ${DIM}(${status.reason.split("/")[0]})${RESET}` : "";
-  routed = `${color}${status.model ?? status.tier}${RESET}${p}${why}`;
+  routed = `${color}${status.model ?? status.tier}${effort}${RESET}${p}${why}`;
 }
 
 process.stdout.write(`${routed} ${DIM}·${RESET} ${dir} ${DIM}· ${pct}% context${RESET}\n`);
