@@ -1,68 +1,37 @@
-import { TypeSafeClient } from "@typesafe-ai/sdk";
-import {
-  COMPLEXITY_MAX_SCORE,
-  CONTEXT_WINDOW_TOKENS,
-  QUESTIONS,
-  questionForModels,
-  THRESHOLDS,
-} from "./config.mjs";
+import { selectProvider, unavailableMessage } from "./providers/select.mjs";
 import { log } from "./log.mjs";
 import { redactText } from "./sanitize.mjs";
 
-// The SDK's defaults (10s per attempt, 2 retries, no total budget) are far too slow for a
-// per-prompt hot path, so the timeout, retry count and an outer deadline are all pinned.
-// Built lazily because the constructor throws when no key is present, and a missing key
-// should degrade to "no routing", not stop the session from starting.
-let client;
-function getClient() {
-  client ??= new TypeSafeClient({
-    apiKey: process.env.JEV_API_KEY ?? process.env.TYPESAFE_API_KEY,
-    timeout: THRESHOLDS.jevTimeoutMs,
-    retry: { maxRetries: THRESHOLDS.jevMaxRetries, backoffInitialMs: 150, backoffMaxMs: 400 },
-    logLevel: "warn", // never "debug": request bodies contain the user's prompt
-  });
-  return client;
-}
-
 /**
- * Asks Jev which tier fits this prompt. Returns null on any failure, which the policy
- * layer reads as "keep the current model" — routing must never block a prompt.
+ * Asks Jev which tier fits this prompt, through whichever provider `JEV_PROVIDER`/the
+ * available keys select (FR-001). Returns null on any failure — no provider configured, an
+ * explicit misconfiguration, a timeout, or a provider error — which the policy layer reads as
+ * "keep the current model". Routing must never block a prompt (FR-020).
  *
- * @returns {Promise<?{choice: string, confidence: number, probabilities: object, metrics: object, ms: number}>}
+ * This is a thin compatibility facade over `providers/select.mjs`: callers (`proxy.mjs`,
+ * `codex-proxy.mjs`) keep injecting a `route` function with this exact signature, so neither
+ * needs to know a provider abstraction exists underneath.
+ *
+ * @returns {Promise<?{
+ *   choice: string, confidence: ?number, probabilities: ?object, metrics: object,
+ *   decisionId: ?string, configuredModel: ?string, resolvedModel: ?string,
+ *   usage: {inputTokens: ?number, outputTokens: ?number}, cost: ?number,
+ *   provider: string, request: object, raw: object, ms: number,
+ * }>}
  */
-export async function askJev({ prompt, current, contextTokens, models }) {
+export async function askJev({ prompt, current, contextTokens, models, env = process.env }) {
   if (!models?.length) return null;
-  const started = Date.now();
-  const abort = new AbortController();
-  const deadline = setTimeout(() => abort.abort(), THRESHOLDS.jevDeadlineMs);
-  const request = {
-    state: {
-      request: prompt,
-      session: { current_model: current, context_tokens: contextTokens },
-      environment: { available_models: models.map((model) => model.id) },
-    },
-    questions: { ...QUESTIONS, model: questionForModels(models) },
-  };
-  try {
-    const result = await getClient().systemOne(request, { signal: abort.signal });
-    const { model: answer, task_complexity, reasoning_required, tool_complexity } = result.answers;
-    return {
-      ...answer,
-      request,
-      response: result,
-      metrics: {
-        taskComplexity: task_complexity.score / COMPLEXITY_MAX_SCORE,
-        reasoningRequired: reasoning_required.score / COMPLEXITY_MAX_SCORE,
-        toolComplexity: tool_complexity.score / COMPLEXITY_MAX_SCORE,
-        contextSize: Math.min(contextTokens / CONTEXT_WINDOW_TOKENS, 1),
-      },
-      ms: Date.now() - started,
-    };
-  } catch (err) {
-    // A provider error may echo the request or a header back in its message.
-    log(`routing failed, keeping ${current}: ${redactText(err.message)}`);
+  const selected = selectProvider(env);
+  if (selected.status !== "ok") {
+    log(`routing unavailable (${unavailableMessage(selected)}), keeping ${current}`);
     return null;
-  } finally {
-    clearTimeout(deadline);
   }
+  const result = await selected.provider.route({ prompt, current, contextTokens, models });
+  if (!result.ok) {
+    // A provider error may echo the request or a header back in its message.
+    log(`routing failed (${result.category}), keeping ${current}: ${redactText(result.message)}`);
+    return null;
+  }
+  const { ok, ...normalized } = result;
+  return { ...normalized, provider: selected.provider.name };
 }

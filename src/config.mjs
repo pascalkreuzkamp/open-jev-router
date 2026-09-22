@@ -57,14 +57,42 @@ export const THRESHOLDS = {
    */
   downgradeMaxContextTokens: 20000,
   /**
-   * Per-attempt Jev HTTP timeout and the hard wall-clock deadline for the whole routing
-   * call. Measured: ~300-350ms warm, ~900-1000ms on the first call (TLS handshake), so the
-   * deadline leaves room for one retry after a cold-start timeout.
+   * Default total wall-clock deadline for one Jev decision (request plus any retry),
+   * overridable per call via `JEV_TIMEOUT_MS`. Measured against the direct TypeSafe API:
+   * ~300-350ms warm, ~900-1000ms on the first call (TLS handshake), so the default leaves
+   * room for one retry after a cold-start failure without making a routing outage stall
+   * the turn it was supposed to speed up.
    */
   jevTimeoutMs: 1500,
-  jevDeadlineMs: 3000,
   jevMaxRetries: 1,
 };
+
+/**
+ * Live `JEV_TIMEOUT_MS` override (read at call time, like `availableTiers`, so tests can set
+ * it per-case) or the default above. Providers pass this as both their outer deadline and
+ * their own per-attempt timeout, so a single slow attempt cannot itself exceed the deadline.
+ */
+export const jevTimeoutMs = (env = process.env) => {
+  const configured = Number(env.JEV_TIMEOUT_MS);
+  return Number.isFinite(configured) && configured > 0 ? configured : THRESHOLDS.jevTimeoutMs;
+};
+
+/** Default OpenRouter Jev model alias; overridable via `JEV_OPENROUTER_MODEL`. */
+export const DEFAULT_OPENROUTER_MODEL = "typesafe/jev-latest";
+
+/**
+ * Categories a provider adapter must sort any failure into (FR-002). `askJev` logs the
+ * category and message but always returns `null` on failure — routing must fail open.
+ */
+export const PROVIDER_ERROR_CATEGORIES = [
+  "auth_error",
+  "rate_limited",
+  "timeout",
+  "network_error",
+  "invalid_response",
+  "provider_error",
+  "unknown_error",
+];
 
 export const CONTEXT_WINDOW_TOKENS = 200000;
 

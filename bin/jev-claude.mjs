@@ -9,6 +9,7 @@ import { AUTO_MODEL } from "../src/config.mjs";
 import { readSavedModel, restoreSavedModel } from "../src/settings.mjs";
 import { LOG_FILE } from "../src/log.mjs";
 import { boolEnv } from "../src/env.mjs";
+import { selectProvider, hasAnyProviderKey, unavailableMessage } from "../src/providers/select.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
@@ -123,7 +124,7 @@ if (!claude) {
   process.exit(1);
 }
 
-if (process.env.JEV_API_KEY || process.env.TYPESAFE_API_KEY) {
+if (hasAnyProviderKey()) {
   const { port, close } = await startProxy();
   env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${port}`;
   env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY = "1";
@@ -133,13 +134,34 @@ if (process.env.JEV_API_KEY || process.env.TYPESAFE_API_KEY) {
     restoreSavedModel(savedModelBefore);
   });
   args.push(...statusLineArgs());
+
+  const selected = selectProvider();
+  if (selected.status === "ok") {
+    process.stderr.write(
+      `[jev] routing via ${selected.provider.name}; fresh task text is sent for routing, ` +
+        `not full tool output or repository contents\n`,
+    );
+    // Bounded and free: confirms the provider is reachable without spending on a decision,
+    // and must never delay or block Claude Code from starting.
+    selected.provider.healthCheck().then(
+      (health) => {
+        if (!health.ok) process.stderr.write(`[jev] ${selected.provider.name} health check failed: ${health.message}\n`);
+      },
+      () => {},
+    );
+  } else {
+    process.stderr.write(
+      `[jev] routing is unavailable (${unavailableMessage(selected)}); Claude Code will run unrouted\n`,
+    );
+  }
+
   if (boolEnv("JEV_DEBUG") && process.stdout.isTTY) {
     process.stderr.write(`[jev] routing decisions -> ${LOG_FILE}\n`);
   }
 } else {
   process.stderr.write(
-    `[jev] no JEV_API_KEY found - starting Claude Code without routing\n` +
-      `[jev] set it in ${join(homedir(), ".jev-claude.env")} to enable routing\n`,
+    `[jev] no provider key found - starting Claude Code without routing\n` +
+      `[jev] set OPENROUTER_API_KEY, JEV_API_KEY, or TYPESAFE_API_KEY in ${join(homedir(), ".jev-claude.env")} to enable routing\n`,
   );
 }
 
