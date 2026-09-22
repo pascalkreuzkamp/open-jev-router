@@ -40,9 +40,14 @@ export class ActorRegistry {
   #sessions = new Map();
   #inFlight = new Map();
   #idleTtlMs;
+  #requireSessionIdentity;
 
-  constructor({ idleTtlMs = ACTOR_IDLE_TTL_MS } = {}) {
+  constructor({
+    idleTtlMs = ACTOR_IDLE_TTL_MS,
+    requireSessionIdentity = false,
+  } = {}) {
     this.#idleTtlMs = idleTtlMs;
+    this.#requireSessionIdentity = requireSessionIdentity;
   }
 
   session(sessionId = "") {
@@ -74,6 +79,18 @@ export class ActorRegistry {
   detect(request) {
     this.prune();
     const correlation = request.correlation;
+    if (this.#requireSessionIdentity && !correlation.sessionId) {
+      return {
+        actorType: "unknown",
+        actorKey: null,
+        parentActorKey: null,
+        isFresh: request.shape === "fresh",
+        confidence: "low",
+        evidence: ["shared router requires explicit session identity"],
+        actor: null,
+        session: null,
+      };
+    }
     const session = this.session(correlation.sessionId);
 
     if (correlation.actorId && correlation.actorType) {

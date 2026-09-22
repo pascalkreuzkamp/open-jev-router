@@ -10,6 +10,7 @@ import { readSavedModel, restoreSavedModel } from "../src/settings.mjs";
 import { LOG_FILE } from "../src/log.mjs";
 import { boolEnv } from "../src/env.mjs";
 import { selectProvider, hasAnyProviderKey, unavailableMessage } from "../src/providers/select.mjs";
+import { loadCredentialFiles } from "../src/credentials.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
@@ -74,17 +75,7 @@ function statusLineArgs() {
 
 // Existing environment variables win, followed by project-local, shared user-level, then
 // the legacy Claude-specific file.
-for (const file of [
-  join(process.cwd(), ".env"),
-  join(homedir(), ".jev-router.env"),
-  join(homedir(), ".jev-claude.env"),
-]) {
-  try {
-    process.loadEnvFile(file);
-  } catch {
-    // Missing or unreadable; the key may still come from the real environment.
-  }
-}
+loadCredentialFiles();
 
 /**
  * Finds the Claude Code executable on PATH. Resolving it here rather than leaning on the

@@ -478,3 +478,15 @@ test("losing the billing header returns subagents to the previous behaviour, not
   assert.notEqual(undeclared.actorType, "subagent");
   assert.ok(["main", "unknown"].includes(undeclared.actorType));
 });
+
+test("a shared registry refuses stateful routing without reliable session identity", () => {
+  const registry = new ActorRegistry({ requireSessionIdentity: true });
+  const uncorrelated = request({ root: "unidentified client" });
+
+  const detection = registry.detect(uncorrelated);
+
+  assert.equal(detection.actorType, "unknown");
+  assert.equal(detection.actor, null);
+  assert.equal(detection.session, null);
+  assert.deepEqual(registry.snapshot(), [], "an unknown client creates no reusable shared state");
+});

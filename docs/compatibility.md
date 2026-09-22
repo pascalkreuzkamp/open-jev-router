@@ -11,6 +11,7 @@ back it out. Everything below describes `jev-router` 0.3.0.
 | Claude Code CLI | Any version whose `/v1/messages` requests match the adapter below | The router forwards anything it cannot classify, so an unrecognised version loses routing, not function. |
 | Claude Code in the VS Code extension | **Experimental** | See [VS Code status](#vs-code-status). |
 | Codex CLI | Any version accepting a `model_provider` from `--config` | Codex support shares the routing core but has its own proxy and status surface. |
+| Persistent daemon | Loopback-only, lifecycle-managed | Uses the same Claude routing engine; VS Code configuration remains a separate experimental layer. |
 | `better-sqlite3` | ~12.9, optional | Only telemetry needs it. Without it the router runs normally and records nothing. |
 
 ## Versioned interfaces
@@ -20,7 +21,7 @@ be read back against the rules that produced it.
 
 | Interface | Version | Bump when |
 |---|---|---|
-| Claude request adapter | `messages-v1/2026-09-22` | Claude Code's request shape changes in a way the current parser reads wrongly. |
+| Claude request adapter | `messages-v2/2026-09-22` | Claude Code's request shape changes in a way the current parser reads wrongly. |
 | Model capability matrix | `2026-09-22` | Anthropic changes which models accept which effort levels or thinking modes. |
 | Telemetry database schema | `1` (`PRAGMA user_version`) | A migration is added. Migrations are append-only; upgrading never requires deleting existing telemetry. |
 | `jev stats` / `jev routes` JSON | `schemaVersion: 1` | A field changes meaning or disappears. |
@@ -52,6 +53,19 @@ the Claude Code sign-in; no `ANTHROPIC_API_KEY` is needed or read for it, and th
 is never sent to Anthropic.
 
 With no provider key, `jev-claude` still starts Claude Code — unrouted, and it says so.
+
+The persistent proxy is managed explicitly and is never installed as a startup service:
+
+```bash
+jev daemon start
+jev daemon status
+jev daemon stop
+```
+
+It binds only to `127.0.0.1`, records owner-only runtime metadata under `JEV_DATA_DIR`, and
+keeps credentials in process memory/environment. `JEV_PROXY_PORT` requests an exact port and
+fails if that port is occupied. Without it, a clean restart reuses the last available port.
+The standalone `jev-claude` path remains independent and does not fail if the daemon is down.
 
 ## Configuration migration
 
@@ -101,6 +115,8 @@ below is covered by automated tests.
 | Telemetry database missing, locked, unwritable, or full | Telemetry drops the write. Routing and forwarding are unaffected. |
 | The router restarts mid-session | In-flight pins are gone, so continuations fall back to a safe model and the next fresh boundary is decided again. Stored telemetry survives. |
 | The request shape is unrecognised | Forwarded unrouted, with the `jev-router` sentinel resolved to a real model. |
+| Daemon runtime PID is stale or reused | Status reports stale state; stop signals nothing. A later start replaces metadata only after health/instance validation. |
+| Requested daemon port is occupied | Explicit `JEV_PROXY_PORT` startup fails; an implicit remembered port falls back to a new loopback port. |
 
 ## Rollback
 
@@ -115,7 +131,8 @@ npm test
 To stop routing without changing any code, unset the provider keys, or pick a concrete model
 in `/model` — the router then passes every request through untouched. To stop telemetry, unset
 `JEV_ENABLE_TELEMETRY`; existing data stays on disk until retention or manual deletion removes
-it.
+it. `jev daemon stop` performs a bounded drain and removes only runtime state belonging to the
+verified instance.
 
 ## VS Code status
 
