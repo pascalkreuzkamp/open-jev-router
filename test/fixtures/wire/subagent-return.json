@@ -1,0 +1,35 @@
+{
+  "category": "subagent-return",
+  "origin": "synthetic",
+  "claudeVersion": null,
+  "captureMethod": "hand-authored: the main agent's next request after its Task tool call resolves",
+  "expectedBehavior": {
+    "isFreshTurn": false,
+    "prompt": null
+  },
+  "notes": "A subagent's result reaches the main agent as an ordinary tool_result for its Task tool call, so it is a continuation at this layer and must not re-trigger routing for the main conversation.",
+  "body": {
+    "model": "claude-opus-5",
+    "tools": [{ "name": "Task" }, { "name": "Bash" }],
+    "messages": [
+      { "role": "user", "content": "Find and fix the race condition in the scheduler." },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "t1",
+            "name": "Task",
+            "input": { "description": "Explore the scheduler for races", "subagent_type": "Explore" }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          { "type": "tool_result", "tool_use_id": "t1", "content": "Found a likely race in scheduler.mjs:42." }
+        ]
+      }
+    ]
+  }
+}

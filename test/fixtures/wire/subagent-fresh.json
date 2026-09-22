@@ -1,0 +1,18 @@
+{
+  "category": "subagent-fresh",
+  "origin": "synthetic",
+  "claudeVersion": null,
+  "captureMethod": "hand-authored; structural inference only (see notes), not a live capture",
+  "expectedBehavior": {
+    "isFreshTurn": true,
+    "prompt": "Explore the test directory and report which files cover routing policy."
+  },
+  "notes": "This codebase has no actor classifier yet (planned for the actor-classification phase). At the /v1/messages wire layer a subagent's fresh request is structurally identical to a main fresh request: tools present, last message is user text. The only thing that currently distinguishes it is conversationKey, which hashes session id plus first-message text and so differs from the main conversation's key. A real capture is needed before any field-level actor signal can be asserted; see overview blocker B-002.",
+  "body": {
+    "model": "jev-router",
+    "tools": [{ "name": "Grep" }, { "name": "Read" }, { "name": "Glob" }],
+    "messages": [
+      { "role": "user", "content": "Explore the test directory and report which files cover routing policy." }
+    ]
+  }
+}

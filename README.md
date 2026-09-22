@@ -88,7 +88,8 @@ the last routing decision:
 │ Jev Router                      │
 │                                 │
 │ Jev request                     │
-│ Prompt: explain the router      │
+│ Prompt: not recorded (see       │
+│ JEV_STORE_PROMPTS)              │
 │ Current tier: HAIKU             │
 │ Context tokens: 6200            │
 │                                 │
@@ -106,13 +107,14 @@ the last routing decision:
 └─────────────────────────────────┘
 ```
 
-The report is rendered locally from the exact prompt, System One request, and System One
-response saved when routing occurred. Recent decisions are retained per CLI session; invoking
-the explanation skill does not ask Jev to score the prompt again.
+The report is rendered locally from the normalized fields saved when routing occurred: tier,
+confidence, per-request metrics, and (by default) a hash of the prompt rather than the prompt
+itself. Recent decisions are retained per CLI session; invoking the explanation skill does not
+ask Jev to score the prompt again.
 
 ### Explanation data location
 
-Both `jev-claude` and `jev-codex` keep up to 20 recent routing exchanges in one JSON file per
+Both `jev-claude` and `jev-codex` keep up to 20 recent routing decisions in one JSON file per
 CLI session under Node.js's operating-system temporary directory:
 
 | Platform | Default location |
@@ -128,10 +130,30 @@ node -e "console.log(require('node:path').join(require('node:os').tmpdir(), 'jev
 ```
 
 Claude filenames use Claude Code's session UUID. Codex filenames use
-`codex-<jev-codex-process-id>.json`. These temporary files contain prompt text and Jev's exact
-request and response, so they are readable only by you (the directory is created with mode 700 and each
-file with 600). Files not updated for 7 days are deleted automatically, and the operating system
-may also remove them during normal temporary-file cleanup.
+`codex-<jev-codex-process-id>.json`. These files hold the routing tier, confidence, per-request
+metrics, and a SHA-256 hash of the prompt; they never hold the raw Jev request/response, and
+prompt text is included only if you opt in (see below). They are readable only by you (the
+directory is created with mode 700 and each file with 600). Files not updated for 7 days are
+deleted automatically, and the operating system may also remove them during normal
+temporary-file cleanup.
+
+### Prompt and diagnostic privacy
+
+By default, a routing decision stores a SHA-256 hash of the prompt, never the prompt text
+itself, and never the raw Jev request/response (which would otherwise embed the prompt again).
+Two opt-ins loosen this, in order of precedence:
+
+| Variable | Effect |
+| --- | --- |
+| `JEV_STORE_PROMPTS=1` | Stores the exact prompt text in the decision. |
+| `JEV_STORE_PROMPT_PREVIEW=1` | Stores a truncated, secret-scrubbed preview instead (ignored if `JEV_STORE_PROMPTS` is also set). |
+
+`JEV_DUMP` and `JEV_DUMP_CONTENT` (below) changed behavior in this version: `JEV_DUMP` used to
+be a path prefix you supplied yourself, with the full unredacted request body written next to
+it (`$JEV_DUMP.<timestamp>.json`). It is now a boolean flag. Dumps land under a fixed private
+directory, message/system/instructions text is omitted by default (structure only, for
+diagnosing wire-format changes), and every dump has secret-shaped fields (authorization,
+API keys, cookies, tokens) redacted regardless of the content flag.
 
 > Choosing a model with `Enter` can save it as Claude Code's default. `jev-claude` restores
 > the previous default on exit so `jev-router` cannot break plain `claude`.
@@ -206,8 +228,11 @@ sub-agents are pinned separately. Routing is fail-open: Jev failure never blocks
 | --- | --- | --- |
 | `JEV_API_KEY` | Both | Enables routing. `TYPESAFE_API_KEY` also works. |
 | `JEV_ALLOW_FABLE` | Both | Enables the opt-in long tier. |
-| `JEV_DEBUG` | Both | Logs decisions and rewrites to `~/.jev-claude.log` in interactive sessions. |
-| `JEV_DUMP` | Both | Dumps request bodies for debugging wire-format changes. |
+| `JEV_DEBUG` | Both | Logs decisions and rewrites to `~/.jev-claude.log` in interactive sessions. Accepts only `1`/`true`; `0` is off. |
+| `JEV_DUMP` | Both | Dumps sanitized, content-omitted wire shapes to `~/.jev-router/dumps/<session>/<id>.json` for debugging format changes. Accepts only `1`/`true`. |
+| `JEV_DUMP_CONTENT` | Both | Includes message/system/instructions text in a `JEV_DUMP` dump (still redacted for secrets). |
+| `JEV_STORE_PROMPTS` | Both | Stores the exact prompt text on a routing decision; off by default (a SHA-256 hash is stored instead). |
+| `JEV_STORE_PROMPT_PREVIEW` | Both | Stores a truncated, secret-scrubbed prompt preview instead of the full prompt. |
 | `JEV_NO_STATUSLINE` | Claude | Disables the injected Claude status line. |
 | `JEV_CODEX_FAST_MODEL` | Codex | Fast model; defaults to `gpt-5.6-luna`. |
 | `JEV_CODEX_BALANCED_MODEL` | Codex | Balanced model; defaults to `gpt-5.6-terra`. |
@@ -254,8 +279,8 @@ injection, and decision display.
 
 - The user's prompt text is sent to TypeSafe for the routing decision. Nothing else is.
 - Jev adds latency only to the first request of a turn; tool-loop continuations add none.
-- Claude Code and Codex request formats are not public contracts. Use `JEV_DUMP` to diagnose
-  upstream changes.
+- Claude Code and Codex request formats are not public contracts. Set `JEV_DUMP=1` to diagnose
+  upstream changes from sanitized wire dumps under `~/.jev-router/dumps`.
 - Developed and tested on Windows against Claude Code v2.1.101 and OpenAI Codex v0.154.0.
 
 ## Contributing

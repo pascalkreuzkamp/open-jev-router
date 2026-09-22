@@ -9,10 +9,9 @@ test("formats the last routing decision", () => {
     tier: "sonnet",
     confidence: 0.94,
     reason: "jev",
-    jev: {
-      request: { state: { session: { current_model: "haiku", context_tokens: 6200 } } },
-      response: { answers: { model_tier: { choice: "sonnet" } } },
-    },
+    recommendedTier: "sonnet",
+    currentModel: "haiku",
+    contextTokens: 6200,
     metrics: {
       taskComplexity: 0.82,
       reasoningRequired: 0.91,
@@ -29,6 +28,16 @@ test("formats the last routing decision", () => {
   assert.match(output, /Selected model: SONNET/);
   assert.match(output, /Confidence: 94%/);
   assert.match(output, /Decision: Jev recommendation/);
+});
+
+test("shows a preview and a not-recorded note when the prompt was not stored", () => {
+  const withPreview = formatExplanation({ promptPreview: "explain the router", tier: "sonnet" });
+  assert.match(withPreview, /Prompt: explain the router/);
+  assert.match(withPreview, /\(preview\)/);
+  assert.match(
+    formatExplanation({ tier: "sonnet" }),
+    /Prompt: not recorded/,
+  );
 });
 
 test("shows the concrete provider model when available", () => {

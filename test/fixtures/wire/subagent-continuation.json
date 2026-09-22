@@ -1,0 +1,23 @@
+{
+  "category": "subagent-continuation",
+  "origin": "synthetic",
+  "claudeVersion": null,
+  "captureMethod": "hand-authored; structural inference only (see notes), not a live capture",
+  "expectedBehavior": {
+    "isFreshTurn": false,
+    "prompt": null
+  },
+  "notes": "Same structural caveat as subagent-fresh.json: indistinguishable from a main tool-loop continuation at this layer without an actor classifier.",
+  "body": {
+    "model": "claude-haiku-4-5-20251001",
+    "tools": [{ "name": "Grep" }, { "name": "Read" }, { "name": "Glob" }],
+    "messages": [
+      { "role": "user", "content": "Explore the test directory and report which files cover routing policy." },
+      {
+        "role": "assistant",
+        "content": [{ "type": "tool_use", "id": "t1", "name": "Glob", "input": { "pattern": "test/**/*.test.mjs" } }]
+      },
+      { "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "t1", "content": "test/policy.test.mjs" }] }
+    ]
+  }
+}

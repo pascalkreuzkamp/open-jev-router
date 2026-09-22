@@ -1,0 +1,18 @@
+{
+  "category": "concurrent-actors",
+  "origin": "synthetic",
+  "claudeVersion": null,
+  "captureMethod": "hand-authored pair (a/b) sharing one session id but different first-message text",
+  "expectedBehavior": {
+    "isFreshTurn": true,
+    "prompt": "Explore the auth module for security issues.",
+    "distinctConversationKeyFrom": "concurrent-actor-b.json"
+  },
+  "notes": "Pairs with concurrent-actor-b.json. Same session_id, different first-message text, so conversationKey must differ and each can be pinned to a different tier independently. Actor-level (main vs subagent) identity is still out of scope this phase; this only proves today's conversationKey-level isolation.",
+  "body": {
+    "model": "jev-router",
+    "metadata": { "user_id": "{\"session_id\":\"11111111-2222-4333-8444-555555555555\"}" },
+    "tools": [{ "name": "Grep" }, { "name": "Read" }],
+    "messages": [{ "role": "user", "content": "Explore the auth module for security issues." }]
+  }
+}

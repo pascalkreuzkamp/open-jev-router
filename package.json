@@ -15,7 +15,7 @@
     "jev-explain": "bin/jev-explain.mjs"
   },
   "scripts": {
-    "test": "node --test \"test/**/*.test.mjs\"",
+    "test": "node --test test/codex.test.mjs test/explain.test.mjs test/fixtures.test.mjs test/policy.test.mjs test/privacy.test.mjs test/proxy.test.mjs test/settings.test.mjs",
     "prepublishOnly": "npm test"
   },
   "files": [

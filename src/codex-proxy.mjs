@@ -1,12 +1,14 @@
 import http from "node:http";
 import https from "node:https";
 import { createHash, randomUUID } from "node:crypto";
-import { writeFileSync } from "node:fs";
 import { availableTiers, shouldUseExactModel } from "./config.mjs";
 import { askJev } from "./router.mjs";
 import { decide } from "./policy.mjs";
-import { log } from "./log.mjs";
+import { debug } from "./log.mjs";
+import { redactText } from "./sanitize.mjs";
 import { writeDecision, writeStatus } from "./status.mjs";
+import { dumpRequest } from "./dump.mjs";
+import { buildDecision } from "./decision.mjs";
 
 const CHATGPT_BASE_URL = "https://chatgpt.com/backend-api/codex";
 const API_BASE_URL = "https://api.openai.com/v1";
@@ -161,7 +163,6 @@ export function jevDecisionEvents({ tier, model = codexModelOf(tier), confidence
   return events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("");
 }
 
-const debug = (line) => process.env.JEV_DEBUG && log(line);
 const upstreamPath = (base, path) => `${new URL(base).pathname.replace(/\/$/, "")}${path}`;
 
 export async function startCodexProxy({
@@ -182,9 +183,7 @@ export async function startCodexProxy({
       if (req.method === "POST" && /\/responses(?:\?|$)/.test(req.url ?? "")) {
         try {
           const body = JSON.parse(out.toString());
-          if (process.env.JEV_DUMP) {
-            writeFileSync(`${process.env.JEV_DUMP}.${Date.now()}.json`, JSON.stringify(body, null, 2));
-          }
+          dumpRequest(statusId || codexConversationKey(body), body);
           if (body.model === CODEX_AUTO_MODEL) {
             const key = codexConversationKey(body);
             const candidates = codexModels(models).filter((model) =>
@@ -201,9 +200,10 @@ export async function startCodexProxy({
               const contextTokens = Math.round(JSON.stringify(body.input).length / 4);
               const jev = await route({ prompt, current: currentModel, contextTokens, models: candidates });
               const chosen = candidates.find((candidate) => candidate.id === jev?.choice);
+              const tierAnswer = jev && { ...jev, choice: chosen?.tier };
               const decision = decide({
                 prompt,
-                jev: jev && { ...jev, choice: chosen?.tier },
+                jev: tierAnswer,
                 current,
                 available,
                 contextTokens,
@@ -216,18 +216,18 @@ export async function startCodexProxy({
                     ? currentModel
                     : modelForTier(candidates, tier);
               states.set(key, { tier, model });
-              routing = {
-                prompt,
+              routing = buildDecision({
                 tier,
                 model,
-                confidence: jev?.confidence ?? null,
-                metrics: jev?.metrics ?? null,
                 reason: decision.reason,
-                jev: jev ? { request: jev.request, response: jev.response } : null,
-                at: Date.now(),
-              };
+                prompt,
+                jev,
+                recommendedTier: tierAnswer?.choice ?? null,
+                currentModel,
+                contextTokens,
+              });
               writeDecision(statusId, routing);
-              debug(`${key} ${current} -> ${tier} (${decision.reason}) | ${prompt.slice(0, 60)}`);
+              debug(`${key} ${current} -> ${tier} (${decision.reason}) | prompt ${routing.promptHash.slice(0, 12)}`);
             }
             applyCodexTier(body, tier, models, model);
           } else {
@@ -237,7 +237,7 @@ export async function startCodexProxy({
           }
           out = Buffer.from(JSON.stringify(body));
         } catch (err) {
-          debug(`codex passthrough, could not process body: ${err.message}`);
+          debug(`codex passthrough, could not process body: ${redactText(err.message)}`);
         }
       }
 
@@ -268,7 +268,7 @@ export async function startCodexProxy({
                 data = Buffer.from(JSON.stringify(catalog));
                 delete responseHeaders["content-length"];
               } catch (err) {
-                debug(`could not extend Codex model catalog: ${err.message}`);
+                debug(`could not extend Codex model catalog: ${redactText(err.message)}`);
               }
               res.writeHead(response.statusCode, responseHeaders);
               res.end(data);
@@ -309,7 +309,7 @@ export async function startCodexProxy({
         },
       );
       upstream.on("error", (err) => {
-        debug(`codex upstream error: ${err.message}`);
+        debug(`codex upstream error: ${redactText(err.message)}`);
         if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: { message: err.message, type: "proxy_error" } }));
       });
