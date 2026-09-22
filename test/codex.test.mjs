@@ -224,8 +224,10 @@ test("proxy preserves Codex auth, picker, routing, and native decision output", 
   assert.equal(seen[1].body.model, "gpt-5.6-sol");
   assert.equal(readStatus(statusId).tier, "opus");
   assert.equal(readStatus(statusId).model, "gpt-5.6-sol");
-  assert.equal(readStatus(statusId).prompt, "debug this race");
-  assert.equal(readStatus(statusId).jev.request.state.request, "debug this race");
+  assert.equal(readStatus(statusId).prompt, undefined, "raw prompt is not stored by default");
+  assert.equal(readStatus(statusId).jev, undefined, "raw Jev request/response is not stored by default");
+  assert.match(readStatus(statusId).promptHash, /^[0-9a-f]{64}$/);
+  assert.equal(readStatus(statusId).recommendedTier, "opus");
   assert.equal(readStatus(statusId).history.length, 1);
   assert.equal(readStatus(statusId).metrics.reasoningRequired, 0.91);
   assert(response.indexOf("response.created") < response.indexOf("[Jev] routed this turn"));

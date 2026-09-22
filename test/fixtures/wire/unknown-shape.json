@@ -1,0 +1,16 @@
+{
+  "category": "unknown-shape",
+  "origin": "synthetic",
+  "claudeVersion": null,
+  "captureMethod": "hand-authored: an unrecognized future wire shape, e.g. after an upstream field rename",
+  "expectedBehavior": {
+    "isFreshTurn": false,
+    "prompt": null
+  },
+  "notes": "Per FR-020/A30, an unrecognized shape must fail open (no crash, no routing) rather than guess.",
+  "body": {
+    "model": "jev-router",
+    "tools": [{ "name": "Bash" }],
+    "turns": [{ "speaker": "human", "text": "this field was renamed from messages" }]
+  }
+}

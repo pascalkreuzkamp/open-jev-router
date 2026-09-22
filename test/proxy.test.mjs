@@ -61,14 +61,13 @@ test("stale status files are pruned and fresh ones kept", () => {
   assert.equal(existsSync(fresh), true);
 });
 
-test("routing status retains the exact recent Jev exchanges", () => {
+test("routing status retains recent decisions by history order", () => {
   const sid = `history-${process.pid}`;
-  writeDecision(sid, { prompt: "first", jev: { request: { id: 1 }, response: { confidence: 0.6 } } });
-  writeDecision(sid, { prompt: "second", jev: { request: { id: 2 }, response: { confidence: 0.8 } } });
+  writeDecision(sid, { tier: "haiku", promptHash: "aaa" });
+  writeDecision(sid, { tier: "sonnet", promptHash: "bbb" });
   const status = readStatus(sid);
-  assert.equal(status.prompt, "second");
-  assert.deepEqual(status.history.map(({ prompt }) => prompt), ["first", "second"]);
-  assert.equal(status.history[0].jev.response.confidence, 0.6);
+  assert.equal(status.tier, "sonnet");
+  assert.deepEqual(status.history.map(({ tier }) => tier), ["haiku", "sonnet"]);
 });
 
 test("recognises older model versions within a tier", () => {
@@ -179,6 +178,59 @@ test("a routed request without metadata is recorded under the conversation key",
   assert.ok(status, "the decision is filed under the conversation key instead of being dropped");
   assert.equal(status.tier, "sonnet");
   assert.equal(status.confidence, 0.77);
+});
+
+test("a secret-bearing prompt reaches neither the debug log nor the persisted decision", async (t) => {
+  const upstream = http.createServer((req, res) => {
+    req.on("data", () => {});
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      res.end('{"id":"msg_1","type":"message","model":"claude-sonnet-5"}');
+    });
+  });
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  t.after(() => upstream.close());
+
+  const previousDebug = process.env.JEV_DEBUG;
+  process.env.JEV_DEBUG = "1";
+  const written = [];
+  const originalWrite = process.stderr.write;
+  process.stderr.write = (chunk) => {
+    written.push(String(chunk));
+    return true;
+  };
+  t.after(() => {
+    process.stderr.write = originalWrite;
+    if (previousDebug === undefined) delete process.env.JEV_DEBUG;
+    else process.env.JEV_DEBUG = previousDebug;
+  });
+
+  const { port, close } = await startProxy({
+    upstreamURL: `http://127.0.0.1:${upstream.address().port}`,
+    route: async () => ({ choice: "claude-sonnet-5", confidence: 0.8, ms: 1 }),
+  });
+  t.after(close);
+
+  const secret = "sk-live-abcdefghijklmnop";
+  const sid = `secret-${process.pid}`;
+  const body = {
+    model: "jev-router",
+    tools: [{ name: "Bash" }],
+    metadata: { user_id: JSON.stringify({ session_id: sid }) },
+    messages: [{ role: "user", content: `use this key: ${secret}` }],
+  };
+  await fetch(`http://127.0.0.1:${port}/v1/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  const logged = written.join("");
+  assert.doesNotMatch(logged, new RegExp(secret), "the raw prompt must not reach the debug log");
+
+  const status = readStatus(sid);
+  assert.equal(status.prompt, undefined, "the raw prompt must not be persisted by default");
+  assert.doesNotMatch(JSON.stringify(status), new RegExp(secret));
 });
 
 const withTools = (messages) => ({ tools: [{ name: "Bash" }], messages });

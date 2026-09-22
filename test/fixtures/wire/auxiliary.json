@@ -1,0 +1,15 @@
+{
+  "category": "auxiliary",
+  "origin": "synthetic",
+  "claudeVersion": null,
+  "captureMethod": "hand-authored: Claude Code's own housekeeping calls (titles, summaries) carry no tools array",
+  "expectedBehavior": {
+    "isFreshTurn": false,
+    "prompt": null
+  },
+  "notes": "No `tools` field at all, which is how newTurnPrompt tells an internal housekeeping call apart from a real agent turn.",
+  "body": {
+    "model": "claude-haiku-4-5-20251001",
+    "messages": [{ "role": "user", "content": "Summarize this conversation in five words." }]
+  }
+}

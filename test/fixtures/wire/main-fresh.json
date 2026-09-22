@@ -1,0 +1,18 @@
+{
+  "category": "main-fresh",
+  "origin": "synthetic",
+  "claudeVersion": null,
+  "captureMethod": "hand-authored from the Messages API shape documented in src/proxy.mjs's newTurnPrompt and existing inline test literals",
+  "expectedBehavior": {
+    "isFreshTurn": true,
+    "prompt": "fix the failing test in test/policy.test.mjs"
+  },
+  "notes": "A fresh main-agent turn: tools present, last message is plain user text.",
+  "body": {
+    "model": "jev-router",
+    "tools": [{ "name": "Bash" }, { "name": "Read" }, { "name": "Edit" }],
+    "messages": [
+      { "role": "user", "content": "fix the failing test in test/policy.test.mjs" }
+    ]
+  }
+}

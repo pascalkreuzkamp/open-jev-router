@@ -8,6 +8,7 @@ import { startProxy } from "../src/proxy.mjs";
 import { AUTO_MODEL } from "../src/config.mjs";
 import { readSavedModel, restoreSavedModel } from "../src/settings.mjs";
 import { LOG_FILE } from "../src/log.mjs";
+import { boolEnv } from "../src/env.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
@@ -132,7 +133,7 @@ if (process.env.JEV_API_KEY || process.env.TYPESAFE_API_KEY) {
     restoreSavedModel(savedModelBefore);
   });
   args.push(...statusLineArgs());
-  if (process.env.JEV_DEBUG && process.stdout.isTTY) {
+  if (boolEnv("JEV_DEBUG") && process.stdout.isTTY) {
     process.stderr.write(`[jev] routing decisions -> ${LOG_FILE}\n`);
   }
 } else {

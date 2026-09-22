@@ -1,7 +1,6 @@
 import http from "node:http";
 import https from "node:https";
 import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
 import {
   TIERS,
   tierOf,
@@ -13,11 +12,14 @@ import {
 } from "./config.mjs";
 import { askJev } from "./router.mjs";
 import { decide } from "./policy.mjs";
-import { log } from "./log.mjs";
+import { debug } from "./log.mjs";
+import { boolEnv } from "./env.mjs";
 import { writeDecision, writeStatus } from "./status.mjs";
+import { dumpRequest } from "./dump.mjs";
+import { buildDecision } from "./decision.mjs";
+import { redactText } from "./sanitize.mjs";
 
 const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
-const debug = (line) => process.env.JEV_DEBUG && log(line);
 
 /**
  * Claude Code converts draft-04 relics in MCP tool schemas before sending them first-party,
@@ -194,9 +196,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
         try {
           const body = JSON.parse(out.toString());
           // Claude Code's request shape is undocumented and moves; JEV_DUMP captures it.
-          if (process.env.JEV_DUMP) {
-            writeFileSync(`${process.env.JEV_DUMP}.${Date.now()}.json`, JSON.stringify(body, null, 2));
-          }
+          dumpRequest(sessionOf(body) || conversationKey(body), body);
           body.tools?.forEach((t) => sanitizeSchema(t.input_schema));
 
           // Anything that is not the sentinel is a model the user chose, and an explicit
@@ -242,17 +242,19 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
                     : modelForTier(models, tier);
               state.tier = tier;
               state.model = model;
-              fresh = {
-                prompt,
+              fresh = buildDecision({
+                tier,
                 model,
-                confidence: jev?.confidence ?? null,
-                metrics: jev?.metrics ?? null,
                 reason,
-                jev: jev ? { request: jev.request, response: jev.response } : null,
-              };
+                prompt,
+                jev,
+                recommendedTier: tierAnswer?.choice ?? null,
+                currentModel,
+                contextTokens,
+              });
               debug(
                 `${key} ${jev ? `${jev.ms}ms p=${jev.confidence.toFixed(2)}` : "no-jev"} ` +
-                  `${current} -> ${tier} (${reason}) ctx~${contextTokens} | ${prompt.slice(0, 60)}`,
+                  `${current} -> ${tier} (${reason}) ctx~${contextTokens} | prompt ${fresh.promptHash.slice(0, 12)}`,
               );
             }
             // The sentinel is not a real model, so every routed request must be rewritten,
@@ -268,12 +270,12 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
             // key is stable for the same conversation and is already what `debug` prints, so
             // it is the identifier a user can pass to `jev-explain` for a print-mode run.
             if (fresh && !explaining) {
-              writeDecision(sessionOf(body) || key, { tier, ...fresh, at: Date.now() });
+              writeDecision(sessionOf(body) || key, fresh);
             }
           }
           out = Buffer.from(JSON.stringify(body));
         } catch (err) {
-          debug(`passthrough, could not process body: ${err.message}`);
+          debug(`passthrough, could not process body: ${redactText(err.message)}`);
         }
       }
 
@@ -286,7 +288,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
       }
       // Under JEV_DEBUG, ask for an uncompressed stream so the model the API reports can be
       // read back out of it. Not worth the bandwidth cost in normal operation.
-      if (process.env.JEV_DEBUG) delete headers["accept-encoding"];
+      if (boolEnv("JEV_DEBUG")) delete headers["accept-encoding"];
       const upstream = transport.request(
         {
           hostname: target.hostname,
@@ -307,7 +309,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
                   if (tierOf(model?.id)) catalog.set(model.id, model);
                 }
               } catch (err) {
-                debug(`could not read Claude model catalog: ${err.message}`);
+                debug(`could not read Claude model catalog: ${redactText(err.message)}`);
               }
               const headers = { ...up.headers };
               delete headers["content-length"];
@@ -320,7 +322,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
           // Report the model the API itself says it used, so the routing can be confirmed
           // from the wire rather than trusted from our own decision log. Claude Code's UI
           // always shows the model it asked for, never the one we rewrote to.
-          if (process.env.JEV_DEBUG) {
+          if (boolEnv("JEV_DEBUG")) {
             let seen = false;
             up.on("data", (c) => {
               if (seen) return;

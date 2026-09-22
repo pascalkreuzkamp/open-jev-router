@@ -7,6 +7,7 @@ import {
   THRESHOLDS,
 } from "./config.mjs";
 import { log } from "./log.mjs";
+import { redactText } from "./sanitize.mjs";
 
 // The SDK's defaults (10s per attempt, 2 retries, no total budget) are far too slow for a
 // per-prompt hot path, so the timeout, retry count and an outer deadline are all pinned.
@@ -58,7 +59,8 @@ export async function askJev({ prompt, current, contextTokens, models }) {
       ms: Date.now() - started,
     };
   } catch (err) {
-    log(`routing failed, keeping ${current}: ${err.message}`);
+    // A provider error may echo the request or a header back in its message.
+    log(`routing failed, keeping ${current}: ${redactText(err.message)}`);
     return null;
   } finally {
     clearTimeout(deadline);

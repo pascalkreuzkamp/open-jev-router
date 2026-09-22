@@ -1,0 +1,26 @@
+{
+  "category": "main-continuation",
+  "origin": "synthetic",
+  "claudeVersion": null,
+  "captureMethod": "hand-authored from the Messages API tool-loop shape documented in src/proxy.mjs's newTurnPrompt and existing inline test literals",
+  "expectedBehavior": {
+    "isFreshTurn": false,
+    "prompt": null
+  },
+  "notes": "A tool-loop continuation of the same turn: the last message is a tool_result, not user text, so it must not re-trigger routing.",
+  "body": {
+    "model": "claude-sonnet-5",
+    "tools": [{ "name": "Bash" }, { "name": "Read" }, { "name": "Edit" }],
+    "messages": [
+      { "role": "user", "content": "fix the failing test in test/policy.test.mjs" },
+      {
+        "role": "assistant",
+        "content": [{ "type": "tool_use", "id": "t1", "name": "Bash", "input": { "command": "npm test" } }]
+      },
+      {
+        "role": "user",
+        "content": [{ "type": "tool_result", "tool_use_id": "t1", "content": "1 failing" }]
+      }
+    ]
+  }
+}

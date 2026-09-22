@@ -6,10 +6,15 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # 20.12 is the package.json engines floor; 22.x is the newest LTS, exercised so a
+        # runtime-specific regression is caught before it reaches either supported end.
+        node-version: ["20.12", "22.x"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20.12"
+          node-version: ${{ matrix.node-version }}
       - run: npm ci
       - run: npm test

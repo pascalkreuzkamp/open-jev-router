@@ -26,16 +26,17 @@ export function formatExplanation(status) {
   if (status.manual) return "Jev Router: routing is paused because you selected a model manually.";
 
   const m = status.metrics ?? {};
-  const request = status.jev?.request?.state;
-  const recommendation = status.jev?.response?.answers?.model_tier?.choice ?? status.tier ?? "unknown";
+  const recommendation = status.recommendedTier ?? status.tier ?? "unknown";
+  const promptLine =
+    status.prompt ?? (status.promptPreview ? `${status.promptPreview} (preview)` : "not recorded (see JEV_STORE_PROMPTS)");
   return [
     `┌${"─".repeat(WIDTH)}┐`,
     row("Jev Router"),
     row(),
     row("Jev request"),
-    ...wrapped("Prompt: ", status.prompt ?? "not recorded"),
-    row(`Current tier: ${(request?.session?.current_model ?? "unknown").toUpperCase()}`),
-    row(`Context tokens: ${request?.session?.context_tokens ?? "unknown"}`),
+    ...wrapped("Prompt: ", promptLine),
+    row(`Current tier: ${(status.currentModel ?? "unknown").toUpperCase()}`),
+    row(`Context tokens: ${status.contextTokens ?? "unknown"}`),
     row(),
     row("Jev response"),
     row(`Task complexity     ${metric(m.taskComplexity)}`),

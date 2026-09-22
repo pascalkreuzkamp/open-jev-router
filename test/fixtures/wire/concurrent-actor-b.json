@@ -1,0 +1,18 @@
+{
+  "category": "concurrent-actors",
+  "origin": "synthetic",
+  "claudeVersion": null,
+  "captureMethod": "hand-authored pair (a/b) sharing one session id but different first-message text",
+  "expectedBehavior": {
+    "isFreshTurn": true,
+    "prompt": "Explore the billing module for a rounding bug.",
+    "distinctConversationKeyFrom": "concurrent-actor-a.json"
+  },
+  "notes": "Pairs with concurrent-actor-a.json. See that file for the shared rationale.",
+  "body": {
+    "model": "jev-router",
+    "metadata": { "user_id": "{\"session_id\":\"11111111-2222-4333-8444-555555555555\"}" },
+    "tools": [{ "name": "Grep" }, { "name": "Read" }],
+    "messages": [{ "role": "user", "content": "Explore the billing module for a rounding bug." }]
+  }
+}
