@@ -8,7 +8,16 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { requireLive, discloseCost, reportCost, writeEvidence, finish } from "./harness.mjs";
+import {
+  requireLive,
+  discloseCost,
+  loadCredentialFiles,
+  reportCost,
+  writeEvidence,
+  finish,
+} from "./harness.mjs";
+
+loadCredentialFiles();
 
 const NAME = "claude";
 const PROMPT = "Reply with exactly the word OK and nothing else.";

@@ -2,15 +2,16 @@
 // Run: JEV_LIVE=1 OPENROUTER_API_KEY=... npm run test:live:jev-openrouter
 // Replaces the older ad-hoc `test/live-routing.mjs`: same prompts, plus the credential gate,
 // cost disclosure and sanitized evidence the acceptance phase requires.
-import { requireLive, discloseCost, reportCost, writeEvidence, finish } from "./harness.mjs";
+import {
+  requireLive,
+  discloseCost,
+  loadCredentialFiles,
+  reportCost,
+  writeEvidence,
+  finish,
+} from "./harness.mjs";
 
-for (const file of [".env"]) {
-  try {
-    process.loadEnvFile(file);
-  } catch {
-    // No .env; the key may still come from the real environment.
-  }
-}
+loadCredentialFiles();
 
 const { askJev } = await import("../../src/router.mjs");
 const { selectProvider } = await import("../../src/providers/select.mjs");

@@ -10,6 +10,29 @@ import { ROUTER_VERSION } from "../../src/version.mjs";
 
 export const EVIDENCE_DIR = join(homedir(), ".jev-router", "live-evidence");
 
+/**
+ * The same files, in the same order, that `bin/jev-claude.mjs` reads: existing environment
+ * variables win, then project-local, then shared user-level, then the legacy Claude-specific
+ * file. A live command that only looked at `./.env` would refuse to run for someone who put
+ * their key where the README tells them to.
+ */
+export function loadCredentialFiles() {
+  const loaded = [];
+  for (const file of [
+    join(process.cwd(), ".env"),
+    join(homedir(), ".jev-router.env"),
+    join(homedir(), ".jev-claude.env"),
+  ]) {
+    try {
+      process.loadEnvFile(file);
+      loaded.push(file);
+    } catch {
+      // Missing or unreadable; the key may still come from the real environment.
+    }
+  }
+  return loaded;
+}
+
 const note = (line) => process.stderr.write(`${line}\n`);
 
 /**
