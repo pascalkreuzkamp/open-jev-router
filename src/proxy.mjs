@@ -8,16 +8,18 @@ import {
   availableTiers,
   tierSpec,
   isAuto,
-  shouldUseExactModel,
 } from "./config.mjs";
 import { askJev } from "./router.mjs";
-import { decide } from "./policy.mjs";
 import { debug } from "./log.mjs";
 import { boolEnv } from "./env.mjs";
 import { writeDecision, writeStatus } from "./status.mjs";
 import { dumpRequest } from "./dump.mjs";
 import { buildDecision } from "./decision.mjs";
 import { redactText } from "./sanitize.mjs";
+import { resolveProfiles, decisionMode, profileTierOf } from "./routing/profiles.mjs";
+import { selectEffectiveRoute, routingConfigFromEnv } from "./routing/select.mjs";
+import { transformClaudeRequest } from "./claude/transform.mjs";
+import { capabilitiesForCatalogModel } from "./routing/capabilities.mjs";
 
 const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 
@@ -81,43 +83,46 @@ export function newTurnPrompt(body) {
 export function applyTier(body, tierName, model = idOf(tierName)) {
   const tier = tierSpec(tierName);
   if (!tier) return body;
-  body.model = model;
-  if (!tier.thinking) {
-    delete body.thinking;
-    // A context-management strategy that prunes thinking blocks is itself rejected once
-    // thinking is gone, so it has to go with it.
-    const edits = body.context_management?.edits;
-    if (Array.isArray(edits)) {
-      body.context_management.edits = edits.filter((e) => !/thinking/i.test(e?.type ?? ""));
-      if (body.context_management.edits.length === 0) delete body.context_management;
-    }
-  }
-  if (!tier.effort && body.output_config) {
-    delete body.output_config.effort;
-    if (Object.keys(body.output_config).length === 0) delete body.output_config;
-  }
+  const { body: transformed } = transformClaudeRequest(body, {
+    model,
+    effectiveEffort: tier.effort ? body.output_config?.effort ?? null : null,
+    normalizationNotes: [],
+  });
+  for (const key of Object.keys(body)) delete body[key];
+  Object.assign(body, transformed);
   return body;
 }
 
 /** Exact Claude models reported by the account, newest first; static ids are the cold-start fallback. */
-export function claudeModels(catalog = []) {
+const configuredTierOf = (model, env = process.env) => {
+  const configured = [
+    ["haiku", env.JEV_CLAUDE_FAST_MODEL],
+    ["sonnet", env.JEV_CLAUDE_BALANCED_MODEL],
+    ["opus", env.JEV_CLAUDE_STRONG_MODEL],
+    ["fable", env.JEV_CLAUDE_LONG_MODEL],
+  ];
+  return tierOf(model) ?? configured.find(([, id]) => id === model)?.[0] ?? null;
+};
+
+export function claudeModels(catalog = [], env = process.env) {
   const models = catalog
-    .filter((model) => tierOf(model?.id))
+    .filter((model) => configuredTierOf(model?.id, env))
     .map((model) => ({
       id: model.id,
-      tier: tierOf(model.id),
+      tier: configuredTierOf(model.id, env),
       description: [
         model.display_name,
         model.created_at && `released ${model.created_at.slice(0, 10)}`,
         model.max_input_tokens && `${model.max_input_tokens} input tokens`,
       ].filter(Boolean).join("; "),
+      capabilities: model.capabilities ?? null,
     }));
   return models.length
     ? models
     : TIERS.map((tier) => ({ id: tier.id, tier: tier.name, description: tier.id }));
 }
 
-const modelForTier = (models, tier) => models.find((model) => model.tier === tier)?.id ?? idOf(tier);
+const modelForTier = (models, tier) => models.find((model) => model.tier === tier)?.id ?? null;
 
 /**
  * Identifies the conversation a request belongs to. Claude Code runs sub-agents through the
@@ -221,25 +226,46 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
               const models = claudeModels([...catalog.values()]).filter((model) =>
                 availableTiers().includes(model.tier),
               );
-              const available = [...new Set(models.map((model) => model.tier))];
-              const currentModel = state.model ?? modelForTier(models, current);
               const contextTokens = Math.round(JSON.stringify(body.messages).length / 4);
-              const jev = await route({ prompt, current: currentModel, contextTokens, models });
-              const chosen = models.find((model) => model.id === jev?.choice);
-              const tierAnswer = jev && { ...jev, choice: chosen?.tier };
-              const { tier, reason } = decide({
+              const profiles = resolveProfiles({ models });
+              const currentModel =
+                state.model ??
+                modelForTier(models, current) ??
+                profiles.find(({ tier }) => tier === "strong")?.model ??
+                profiles.find(({ tier }) => tier === "balanced")?.model ??
+                profiles[0]?.model ??
+                idOf(current);
+              const mode = decisionMode();
+              const jev = await route({
                 prompt,
-                jev: tierAnswer,
-                current,
-                available,
+                current: currentModel,
                 contextTokens,
+                models,
+                profiles,
+                decisionMode: mode,
               });
-              const model =
-                shouldUseExactModel(reason, chosen?.tier, tier)
-                  ? chosen.id
-                  : tier === current
-                    ? currentModel
-                    : modelForTier(models, tier);
+              const effectiveRoute = selectEffectiveRoute({
+                recommendation: jev,
+                currentRoute:
+                  state.route ?? {
+                    model: currentModel,
+                    tier: profileTierOf(current),
+                    effectiveEffort: body.output_config?.effort ?? null,
+                  },
+                profiles,
+                contextState: { estimatedTokens: contextTokens },
+                manualState: { prompt },
+                config: { ...routingConfigFromEnv(), createdAt: Date.now() },
+              });
+              const tier = effectiveRoute?.legacyTier ?? current;
+              const model = effectiveRoute?.model ?? currentModel;
+              const reason =
+                effectiveRoute?.source === "jev"
+                  ? "jev"
+                  : effectiveRoute?.fallbackReason === "unknown_recommendation"
+                    ? "jev-unavailable+unknown-recommendation"
+                    : effectiveRoute?.fallbackReason ?? effectiveRoute?.source ?? "jev-unavailable";
+              state.route = effectiveRoute;
               state.tier = tier;
               state.model = model;
               fresh = buildDecision({
@@ -248,7 +274,11 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
                 reason,
                 prompt,
                 jev,
-                recommendedTier: tierAnswer?.choice ?? null,
+                route: effectiveRoute,
+                recommendedTier:
+                  profiles.find(({ id }) => id === jev?.choice)?.tier ??
+                  profileTierOf(tierOf(jev?.choice)) ??
+                  null,
                 currentModel,
                 contextTokens,
               });
@@ -262,7 +292,38 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
             const tier = state.tier ?? current;
             const model = state.model ?? idOf(tier);
             debug(`${key} rewrite ${body.model} -> ${model}`);
-            applyTier(body, tier, model);
+            const effectiveRoute = state.route ?? {
+              model,
+              effectiveEffort: body.output_config?.effort ?? null,
+              normalizationNotes: [],
+            };
+            const transformed = transformClaudeRequest(
+              body,
+              effectiveRoute,
+              (selectedModel) =>
+                capabilitiesForCatalogModel(catalog.get(selectedModel) ?? { id: selectedModel }),
+            );
+            if (state.route) {
+              const transformNotes = [
+                ...transformed.audit.normalizationNotes,
+                ...(transformed.audit.removedFields.length
+                  ? [`removed ${transformed.audit.removedFields.join(", ")}`]
+                  : []),
+              ];
+              state.route = {
+                ...state.route,
+                effectiveEffort: transformed.audit.effortAfter,
+                thinkingPolicy: transformed.body.thinking?.type ?? state.route.thinkingPolicy,
+                normalizationNotes: [...new Set(transformNotes)],
+              };
+              if (fresh) {
+                fresh.effectiveEffort = state.route.effectiveEffort;
+                fresh.thinkingPolicy = state.route.thinkingPolicy;
+                fresh.normalizationNotes = state.route.normalizationNotes;
+              }
+            }
+            for (const key of Object.keys(body)) delete body[key];
+            Object.assign(body, transformed.body);
             // Publish what went out. Claude Code's UI shows the row you picked, not the tier
             // it resolved to, so the status line is the only place this is visible.
             // `claude -p` omits metadata on the first request of a session, so there is no
@@ -306,7 +367,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
               const data = Buffer.concat(chunks);
               try {
                 for (const model of JSON.parse(data.toString()).data ?? []) {
-                  if (tierOf(model?.id)) catalog.set(model.id, model);
+                  if (configuredTierOf(model?.id)) catalog.set(model.id, model);
                 }
               } catch (err) {
                 debug(`could not read Claude model catalog: ${redactText(err.message)}`);

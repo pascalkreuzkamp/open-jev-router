@@ -93,6 +93,16 @@ test("keeps available Claude model versions as separate Jev choices", () => {
   );
 });
 
+test("a configured account model is assigned to its declared tier", () => {
+  const models = claudeModels(
+    [{ id: "claude-account-custom", display_name: "Account Custom" }],
+    { JEV_CLAUDE_BALANCED_MODEL: "claude-account-custom" },
+  );
+  assert.deepEqual(models.map(({ id, tier }) => ({ id, tier })), [
+    { id: "claude-account-custom", tier: "sonnet" },
+  ]);
+});
+
 test("Claude proxy sends exact account models to Jev and routes the chosen version", async (t) => {
   const seen = [];
   const upstream = http.createServer((req, res) => {

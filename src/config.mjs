@@ -42,12 +42,15 @@ export const tierOf = (model) =>
  * Fable bills extra usage credits, so it is opt-in. Everything else is covered by a normal
  * subscription.
  */
-export const availableTiers = () =>
-  TIER_NAMES.filter((n) => n !== "fable" || process.env.JEV_ALLOW_FABLE === "1");
+export const availableTiers = (env = process.env) =>
+  TIER_NAMES.filter(
+    (n) => n !== "fable" || env.JEV_ALLOW_LONG_TIER === "1" || env.JEV_ALLOW_FABLE === "1",
+  );
 
 export const THRESHOLDS = {
   /** Below this Jev confidence we refuse to downgrade and cap upgrades at `uncertainCeiling`. */
-  minConfidence: 0.3,
+  minConfidence: 0.45,
+  highConfidence: 0.8,
   /** Safest tier to land on when Jev is unsure. */
   uncertainCeiling: "sonnet",
   /**
@@ -174,6 +177,25 @@ export const questionForModels = (models) =>
       models.map(({ id, tier, description }) => [
         id,
         { model: description ?? id, ...GUIDANCE[tier] },
+      ]),
+    ),
+  );
+
+/** Build the preferred profile-choice question from capability-valid runtime profiles. */
+export const questionForProfiles = (profiles) =>
+  choice(
+    [
+      "Pick the cheapest model and effort profile that can fully complete this coding request in one pass.",
+      "Use higher effort within a model before escalating model tier when that is sufficient.",
+    ],
+    Object.fromEntries(
+      profiles.map((profile) => [
+        profile.id,
+        {
+          model: profile.model,
+          tier: profile.tier,
+          effort: profile.effort ?? "default",
+        },
       ]),
     ),
   );

@@ -12,6 +12,8 @@ test("formats the last routing decision", () => {
     recommendedTier: "sonnet",
     currentModel: "haiku",
     contextTokens: 6200,
+    effectiveEffort: "medium",
+    normalizationNotes: ["manual thinking normalized to adaptive thinking"],
     metrics: {
       taskComplexity: 0.82,
       reasoningRequired: 0.91,
@@ -26,6 +28,8 @@ test("formats the last routing decision", () => {
   assert.match(output, /Context tokens: 6200/);
   assert.match(output, /Recommended tier: SONNET/);
   assert.match(output, /Selected model: SONNET/);
+  assert.match(output, /Effective effort: MEDIUM/);
+  assert.match(output, /Normalized: manual thinking/);
   assert.match(output, /Confidence: 94%/);
   assert.match(output, /Decision: Jev recommendation/);
 });

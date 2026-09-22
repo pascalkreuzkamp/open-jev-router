@@ -26,6 +26,7 @@ export function buildDecision({
   recommendedTier = null,
   currentModel = null,
   contextTokens = null,
+  route = null,
 }) {
   const decision = {
     tier,
@@ -44,6 +45,15 @@ export function buildDecision({
     resolvedModel: jev?.resolvedModel ?? null,
     usage: jev?.usage ?? null,
     cost: jev?.cost ?? null,
+    routeId: route?.routeId ?? null,
+    profileId: route?.profileId ?? null,
+    source: route?.source ?? null,
+    requestedEffort: route?.requestedEffort ?? null,
+    effectiveEffort: route?.effectiveEffort ?? null,
+    thinkingPolicy: route?.thinkingPolicy ?? null,
+    fallbackReason: route?.fallbackReason ?? null,
+    normalizationNotes: route?.normalizationNotes ?? [],
+    createdAt: route?.createdAt ?? null,
     promptHash: createHash("sha256").update(prompt).digest("hex"),
     at: Date.now(),
   };

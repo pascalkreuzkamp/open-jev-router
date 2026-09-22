@@ -1,4 +1,4 @@
-import { QUESTIONS, questionForModels, jevTimeoutMs } from "../config.mjs";
+import { QUESTIONS, questionForModels, questionForProfiles, jevTimeoutMs } from "../config.mjs";
 import { redactText } from "../sanitize.mjs";
 import { fail, normalizeAnswers } from "./normalize.mjs";
 
@@ -57,7 +57,7 @@ export function createOpenRouterProvider({
 } = {}) {
   const deadline = timeoutMs ?? jevTimeoutMs();
 
-  async function route({ prompt, current, contextTokens, models }) {
+  async function route({ prompt, current, contextTokens, models, profiles = [], decisionMode = "signals" }) {
     const started = Date.now();
     const abort = new AbortController();
     const timer = setTimeout(() => abort.abort(), deadline);
@@ -66,9 +66,18 @@ export function createOpenRouterProvider({
       state: {
         request: prompt,
         session: { current_model: current, context_tokens: contextTokens },
-        environment: { available_models: models.map((m) => m.id) },
+        environment: {
+          available_models: models.map((m) => m.id),
+          ...(profiles.length ? { available_profiles: profiles.map((profile) => profile.id) } : {}),
+        },
       },
-      questions: { ...QUESTIONS, model: questionForModels(models) },
+      questions: {
+        ...QUESTIONS,
+        model:
+          decisionMode === "profiles" && profiles.length
+            ? questionForProfiles(profiles)
+            : questionForModels(models),
+      },
     };
     try {
       const res = await fetchImpl(`${baseURL}${DECISIONS_PATH}`, {
