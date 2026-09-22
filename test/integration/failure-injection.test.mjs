@@ -17,6 +17,7 @@ const CATALOG = [
   { id: "claude-haiku-4-5-20251001", display_name: "Claude Haiku 4.5" },
   { id: "claude-sonnet-5", display_name: "Claude Sonnet 5" },
   { id: "claude-opus-5", display_name: "Claude Opus 5" },
+  { id: "claude-fable-5-1", display_name: "Claude Fable 5.1" },
 ];
 
 const SENTINEL = "jev-router";
@@ -251,4 +252,47 @@ test("a router restart re-decides the next fresh boundary instead of reusing a l
   assert.equal(response.status, 200);
   assert.equal(asked.length, 2, "the restarted router decided the boundary again");
   assert.equal(second.seen.at(-1).model, "claude-opus-5");
+});
+
+const chooseFable = async () => ({ choice: "claude-fable-5-1", confidence: 0.95, provider: "mock", ms: 1 });
+
+test("a routed Fable request the account cannot pay for is retried once on Opus", async (t) => {
+  setEnv(t, { JEV_ALLOW_FABLE: "1" });
+  const { seen, send } = await harness(t, {
+    route: chooseFable,
+    respond: (res, n) => {
+      if (n === 1) {
+        res.writeHead(400, { "content-type": "application/json" });
+        return res.end('{"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to use extra usage."}}');
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end('{"id":"msg_1","type":"message","model":"claude-opus-5"}');
+    },
+  });
+
+  const response = await send(body());
+  assert.equal(response.status, 200, "the user never sees the credit error");
+  assert.deepEqual(seen.map(({ model }) => model), ["claude-fable-5-1", "claude-opus-5"]);
+
+  // Later turns no longer offer Fable at all, so they go straight to Opus.
+  await send(body({ session: "s-fail-2" }));
+  assert.equal(seen.length, 3);
+  assert.equal(seen[2].model, "claude-opus-5");
+});
+
+test("an ordinary Fable rejection is forwarded verbatim, not retried on Opus", async (t) => {
+  setEnv(t, { JEV_ALLOW_FABLE: "1" });
+  const failure = '{"type":"error","error":{"type":"invalid_request_error","message":"bad request"}}';
+  const { seen, send } = await harness(t, {
+    route: chooseFable,
+    respond: (res) => {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(failure);
+    },
+  });
+
+  const response = await send(body());
+  assert.equal(response.status, 400);
+  assert.equal(await response.text(), failure);
+  assert.deepEqual(seen.map(({ model }) => model), ["claude-fable-5-1"]);
 });

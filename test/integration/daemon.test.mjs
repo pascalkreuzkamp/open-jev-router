@@ -271,8 +271,8 @@ test("shared engine isolates sessions and forwarded authorization while unknown 
   ]);
   assert.deepEqual(seen.map((entry) => entry.body.model), [
     "claude-haiku-4-5-20251001",
-    "claude-opus-5",
-    "claude-opus-5",
+    "claude-opus-5-5",
+    "claude-opus-5-5",
   ]);
 
   const denied = await fetch(`http://127.0.0.1:${proxy.port}/shutdown`, {

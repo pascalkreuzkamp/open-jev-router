@@ -32,9 +32,11 @@ disables telemetry instead of blocking inference.
 ### Claude models
 
 The routing tiers resolve against the signed-in account's own catalog. The built-in defaults
-are `claude-haiku-4-5-20251001`, `claude-sonnet-5`, `claude-opus-5`, and — behind
+are `claude-haiku-4-5-20251001`, `claude-sonnet-5`, `claude-opus-5-5`, and — behind
 `JEV_ALLOW_LONG_TIER` — `claude-fable-5-1`. A tier whose model the account cannot use steps
-up to an equal-or-stronger one; it never silently lands on something weaker. Override an
+up to an equal-or-stronger one; it never silently lands on something weaker. The one exception is Fable, which needs extra
+usage credit: when it is unavailable, either up front or refused by the API mid-session, the
+router falls back to Opus. Override an
 exact model per tier with `JEV_CLAUDE_FAST_MODEL`, `JEV_CLAUDE_BALANCED_MODEL`,
 `JEV_CLAUDE_STRONG_MODEL`, or `JEV_CLAUDE_LONG_MODEL`.
 
