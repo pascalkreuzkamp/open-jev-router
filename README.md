@@ -287,7 +287,10 @@ The local policy then applies these rules:
 - confidence below `0.45` never downgrades and caps upgrades at the balanced tier;
 - large conversations refuse downgrades that would waste more prompt-cache work than they save;
 - unavailable tiers step upward rather than silently choosing a weaker model;
-- the long tier is disabled unless `JEV_ALLOW_LONG_TIER=1` (legacy `JEV_ALLOW_FABLE=1` also works).
+- the long tier is disabled unless `JEV_ALLOW_LONG_TIER=1` (legacy `JEV_ALLOW_FABLE=1` also works);
+- Fable bills extra usage credit. If the account refuses a routed Fable request (no credit, or
+  the model is not enabled), the Claude proxy retries that request once on Opus, pins the turn
+  there, and stops offering Fable for the rest of the session.
 
 For Claude, the signed-in account catalog is resolved into profiles such as `sonnet-low`,
 `sonnet-medium`, and `opus-high`. The versioned capability matrix validates the selected
@@ -450,7 +453,7 @@ directory, `~/.jev-router.env`, and the legacy `~/.jev-claude.env`.
 Tier definitions, Jev's question, confidence thresholds, and timeouts live in `src/config.mjs`;
 versioned Claude capabilities and profiles live under `src/routing/`. Both launchers use the
 signed-in account's native catalog, so model versions such as `claude-opus-4-8` and
-`claude-opus-5` remain separate choices. Static model ids are used only until the CLI fetches
+`claude-opus-5-5` remain separate choices. Static model ids are used only until the CLI fetches
 its catalog.
 
 ## Compatibility notes

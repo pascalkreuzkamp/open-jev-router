@@ -103,6 +103,24 @@ const configuredTierOf = (model, env = process.env) => {
   return tierOf(model) ?? configured.find(([, id]) => id === model)?.[0] ?? null;
 };
 
+/**
+ * Statuses the API uses when an account cannot run a model: no extra usage credit (402, or a
+ * 400/429 billing error), or the model not being enabled for it (403/404).
+ */
+const FABLE_REFUSAL_STATUS = new Set([400, 402, 403, 404, 429]);
+
+/** Whether an error body says the account lacks access or credit, rather than a bad request. */
+export function isFableRefusal(data) {
+  let message = "";
+  try {
+    const parsed = JSON.parse(data.toString());
+    message = `${parsed?.error?.type ?? ""} ${parsed?.error?.message ?? ""}`;
+  } catch {
+    return false;
+  }
+  return /credit|billing|extra usage|usage limit|quota|not_found_error|permission_error|not (?:available|enabled)|does not have access/i.test(message);
+}
+
 export function claudeModels(catalog = [], env = process.env) {
   const models = catalog
     .filter((model) => configuredTierOf(model?.id, env))
@@ -184,6 +202,9 @@ export async function startProxy({
   onShutdown = null,
 } = {}) {
   const catalog = new Map();
+  // Set once the account refuses a routed Fable request (no extra usage credit, or the model
+  // is not enabled). From then on this proxy stops offering Fable and routes to Opus instead.
+  let fableRefused = false;
   if (host !== "127.0.0.1" && host !== "::1") {
     throw new Error(`proxy host must be loopback, received ${host}`);
   }
@@ -219,6 +240,8 @@ export async function startProxy({
     req.on("data", (c) => chunks.push(c));
     req.on("end", async () => {
       let out = Buffer.concat(chunks);
+      // A routed request that went out as Fable, kept so a refusal can be retried on Opus.
+      let fableAttempt = null;
       // What telemetry knows about this request. Filled in below when the request is one we
       // can attribute; left empty for anything else, which is then counted but not stored.
       const observed = {
@@ -353,7 +376,7 @@ export async function startProxy({
             let fresh = null;
             if (classification.endsWith("_fresh") && prompt && !explaining) {
               const models = claudeModels([...catalog.values()]).filter((model) =>
-                availableTiers().includes(model.tier),
+                availableTiers().includes(model.tier) && !(fableRefused && model.tier === "fable"),
               );
               const contextTokens = Math.round(JSON.stringify(body.messages).length / 4);
               const profiles = resolveProfiles({ models });
@@ -488,6 +511,7 @@ export async function startProxy({
             for (const field of Object.keys(body)) delete body[field];
             Object.assign(body, transformed.body);
             observed.model = body.model ?? null;
+            if (configuredTierOf(body.model) === "fable") fableAttempt = { actor, fresh, statusKey, explaining };
             observed.effort = body.output_config?.effort ?? null;
             // Publish what went out. Claude Code's UI shows the row you picked, not the tier
             // it resolved to, so the status line is the only place this is visible.
@@ -515,108 +539,151 @@ export async function startProxy({
       // Under JEV_DEBUG, ask for an uncompressed stream so the model the API reports can be
       // read back out of it. Not worth the bandwidth cost in normal operation.
       if (boolEnv("JEV_DEBUG")) delete headers["accept-encoding"];
-      const upstream = transport.request(
-        {
-          hostname: target.hostname,
-          port: target.port || undefined,
-          path: `${target.pathname.replace(/\/$/, "")}${req.url}`,
-          method: req.method,
-          headers,
-        },
-        (up) => {
-          const isModels = req.method === "GET" && /^\/v1\/models(?:\?|$)/.test(req.url ?? "");
-          const isMessages = observesMessages;
-          if (isModels) {
-            const chunks = [];
-            up.on("data", (chunk) => chunks.push(chunk));
-            up.on("end", () => {
-              const data = Buffer.concat(chunks);
-              try {
-                for (const model of JSON.parse(data.toString()).data ?? []) {
-                  if (configuredTierOf(model?.id)) catalog.set(model.id, model);
+      const send = (payload, retried = false) => {
+        const upstream = transport.request(
+          {
+            hostname: target.hostname,
+            port: target.port || undefined,
+            path: `${target.pathname.replace(/\/$/, "")}${req.url}`,
+            method: req.method,
+            headers,
+          },
+          (up) => {
+            if (fableAttempt && !retried && FABLE_REFUSAL_STATUS.has(up.statusCode)) {
+              const errorChunks = [];
+              up.on("data", (chunk) => errorChunks.push(chunk));
+              up.on("end", () => {
+                const errorData = Buffer.concat(errorChunks);
+                if (!isFableRefusal(errorData)) {
+                  res.writeHead(up.statusCode, up.headers);
+                  res.end(errorData);
+                  recordOutcome({ responseBytes: errorData.length, httpStatus: up.statusCode ?? null });
+                  return;
                 }
-              } catch (err) {
-                debug(`could not read Claude model catalog: ${redactText(err.message)}`);
-              }
-              const headers = { ...up.headers };
-              delete headers["content-length"];
-              res.writeHead(up.statusCode, headers);
-              res.end(data);
-            });
-            return;
-          }
-          res.writeHead(up.statusCode, up.headers);
-          // Report the model the API itself says it used, so the routing can be confirmed
-          // from the wire rather than trusted from our own decision log. Claude Code's UI
-          // always shows the model it asked for, never the one we rewrote to.
-          if (boolEnv("JEV_DEBUG")) {
-            let seen = false;
-            up.on("data", (c) => {
-              if (seen) return;
-              const m = /"model"\s*:\s*"([^"]+)"/.exec(c.toString("utf8"));
-              if (!m) return;
-              seen = true;
-              debug(`${up.statusCode} served by ${m[1]}`);
-            });
-          }
+                send(fallBackToOpus(), true);
+              });
+              return;
+            }
+            const isModels = req.method === "GET" && /^\/v1\/models(?:\?|$)/.test(req.url ?? "");
+            const isMessages = observesMessages;
+            if (isModels) {
+              const chunks = [];
+              up.on("data", (chunk) => chunks.push(chunk));
+              up.on("end", () => {
+                const data = Buffer.concat(chunks);
+                try {
+                  for (const model of JSON.parse(data.toString()).data ?? []) {
+                    if (configuredTierOf(model?.id)) catalog.set(model.id, model);
+                  }
+                } catch (err) {
+                  debug(`could not read Claude model catalog: ${redactText(err.message)}`);
+                }
+                const headers = { ...up.headers };
+                delete headers["content-length"];
+                res.writeHead(up.statusCode, headers);
+                res.end(data);
+              });
+              return;
+            }
+            res.writeHead(up.statusCode, up.headers);
+            // Report the model the API itself says it used, so the routing can be confirmed
+            // from the wire rather than trusted from our own decision log. Claude Code's UI
+            // always shows the model it asked for, never the one we rewrote to.
+            if (boolEnv("JEV_DEBUG")) {
+              let seen = false;
+              up.on("data", (c) => {
+                if (seen) return;
+                const m = /"model"\s*:\s*"([^"]+)"/.exec(c.toString("utf8"));
+                if (!m) return;
+                seen = true;
+                debug(`${up.statusCode} served by ${m[1]}`);
+              });
+            }
 
-          // Usage is read from a copy of the bytes, never from the bytes themselves: the
-          // response is piped through untouched, so nothing here can change what Claude Code
-          // receives, and an observer failure cannot interrupt the stream.
-          const observer = recordsTelemetry
-            ? createUsageObserver({
-                contentType: up.headers["content-type"] ?? "",
-                contentEncoding: up.headers["content-encoding"] ?? null,
-              })
-            : null;
-          if (isMessages) {
-            let responseBytes = 0;
-            up.on("data", (chunk) => {
-              responseBytes += chunk.length;
-              if (!observer) return;
-              try {
-                observer.write(chunk);
-              } catch {
-                // Observation is best effort; forwarding continues regardless.
-              }
-            });
-            // A response ends normally, is aborted mid-stream, or errors. Whichever happens,
-            // the partial usage seen so far is recorded once, marked incomplete by the parser.
-            let finished = false;
-            const finishOnce = () => {
-              if (finished) return;
-              finished = true;
-              recordOutcome({ observer, responseBytes, httpStatus: up.statusCode ?? null });
+            // Usage is read from a copy of the bytes, never from the bytes themselves: the
+            // response is piped through untouched, so nothing here can change what Claude Code
+            // receives, and an observer failure cannot interrupt the stream.
+            const observer = recordsTelemetry
+              ? createUsageObserver({
+                  contentType: up.headers["content-type"] ?? "",
+                  contentEncoding: up.headers["content-encoding"] ?? null,
+                })
+              : null;
+            if (isMessages) {
+              let responseBytes = 0;
+              up.on("data", (chunk) => {
+                responseBytes += chunk.length;
+                if (!observer) return;
+                try {
+                  observer.write(chunk);
+                } catch {
+                  // Observation is best effort; forwarding continues regardless.
+                }
+              });
+              // A response ends normally, is aborted mid-stream, or errors. Whichever happens,
+              // the partial usage seen so far is recorded once, marked incomplete by the parser.
+              let finished = false;
+              const finishOnce = () => {
+                if (finished) return;
+                finished = true;
+                recordOutcome({ observer, responseBytes, httpStatus: up.statusCode ?? null });
+              };
+              up.on("end", finishOnce);
+              up.on("aborted", finishOnce);
+              up.on("error", finishOnce);
+              up.on("close", finishOnce);
+            }
+            // `pipe` only ends the downstream response on a clean `end`. If upstream drops the
+            // connection mid-stream, the client would otherwise wait forever, so the truncation
+            // is propagated instead of being papered over with a clean end that would look like
+            // a complete response.
+            const abort = () => {
+              if (!res.writableEnded) res.destroy();
             };
-            up.on("end", finishOnce);
-            up.on("aborted", finishOnce);
-            up.on("error", finishOnce);
-            up.on("close", finishOnce);
-          }
-          // `pipe` only ends the downstream response on a clean `end`. If upstream drops the
-          // connection mid-stream, the client would otherwise wait forever, so the truncation
-          // is propagated instead of being papered over with a clean end that would look like
-          // a complete response.
-          const abort = () => {
-            if (!res.writableEnded) res.destroy();
+            up.on("aborted", abort);
+            up.on("error", (err) => {
+              debug(`upstream stream ended early: ${redactText(err.message)}`);
+              abort();
+            });
+            up.pipe(res);
+          },
+        );
+        upstream.on("error", (e) => {
+          debug(`upstream error: ${e.message}`);
+          if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
+          const errorBody = JSON.stringify({ type: "error", error: { message: e.message } });
+          res.end(errorBody);
+          recordOutcome({ responseBytes: Buffer.byteLength(errorBody), httpStatus: 502 });
+        });
+        if (payload.length) upstream.write(payload);
+        upstream.end();
+      };
+      // The account cannot run Fable: retry this same request once on Opus, repin the actor
+      // there, and stop offering Fable, so the user never sees a credit error for a tier they
+      // did not pick themselves.
+      const fallBackToOpus = () => {
+        fableRefused = true;
+        const { actor, fresh, statusKey, explaining } = fableAttempt;
+        const opus = modelForTier(claudeModels([...catalog.values()]), "opus") ?? idOf("opus");
+        debug(`fable refused upstream, retrying on ${opus}`);
+        const note = "fable refused upstream; fell back to opus";
+        if (actor.pinnedRoute) {
+          actor.pinnedRoute = {
+            ...actor.pinnedRoute,
+            model: opus,
+            legacyTier: "opus",
+            normalizationNotes: [...(actor.pinnedRoute.normalizationNotes ?? []), note],
           };
-          up.on("aborted", abort);
-          up.on("error", (err) => {
-            debug(`upstream stream ended early: ${redactText(err.message)}`);
-            abort();
-          });
-          up.pipe(res);
-        },
-      );
-      upstream.on("error", (e) => {
-        debug(`upstream error: ${e.message}`);
-        if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
-        const errorBody = JSON.stringify({ type: "error", error: { message: e.message } });
-        res.end(errorBody);
-        recordOutcome({ responseBytes: Buffer.byteLength(errorBody), httpStatus: 502 });
-      });
-      if (out.length) upstream.write(out);
-      upstream.end();
+        }
+        if (fresh && !explaining) {
+          writeDecision(statusKey, { ...fresh, tier: "opus", model: opus, reason: `${fresh.reason}+fable-refused` });
+        }
+        const body = JSON.parse(out.toString());
+        body.model = opus;
+        observed.model = opus;
+        return Buffer.from(JSON.stringify(body));
+      };
+      send(out);
     });
   });
 

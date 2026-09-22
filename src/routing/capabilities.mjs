@@ -68,8 +68,8 @@ export const CAPABILITY_MATRIX = Object.freeze({
       thinkingAlwaysOn: false,
     },
     {
-      id: "opus-5",
-      pattern: /^claude-opus-5(?:\[.*\])?$/,
+      id: "opus-5-5.5",
+      pattern: /^claude-opus-5(?:-5)?(?:\[.*\])?$/,
       supportedEfforts: EFFORT_LEVELS,
       supportsAdaptiveThinking: true,
       supportsManualThinking: false,

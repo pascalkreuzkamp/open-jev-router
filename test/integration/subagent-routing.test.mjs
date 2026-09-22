@@ -380,7 +380,7 @@ test("an unidentified actor fails open without touching the main agent's pin", a
   assert.equal(asked.length, 1, "an unknown actor is never routed");
   assert.deepEqual(seen.map(({ model }) => model), [
     "claude-haiku-4-5-20251001",
-    "claude-opus-5",
+    "claude-opus-5-5",
     "claude-haiku-4-5-20251001",
   ]);
 });
@@ -389,7 +389,7 @@ test("a malformed body reaches upstream unrouted with the sentinel resolved", as
   const { seen, asked, send } = await harness(t, { route: async () => choose("haiku-default") });
   await send({ model: "jev-router", tools: TOOLS, messages: "not an array" });
   assert.equal(asked.length, 0);
-  assert.equal(seen[0].model, "claude-opus-5");
+  assert.equal(seen[0].model, "claude-opus-5-5");
 });
 
 test("a manual selection reports manual state without disturbing another actor", async (t) => {
@@ -438,7 +438,7 @@ test("after a restart a continuation falls back safely instead of reconstructing
     body({ session: "s-restart", actor: "main", type: "main", turn: "t1", prompt: "main task", toolResult: "ok" }),
   );
   assert.equal(restarted.asked.length, 0, "a continuation is never a routing boundary");
-  assert.equal(restarted.seen[0].model, "claude-opus-5", "falls back to the strongest safe model");
+  assert.equal(restarted.seen[0].model, "claude-opus-5-5", "falls back to the strongest safe model");
 
   await restarted.send(
     body({ session: "s-restart", actor: "main", type: "main", turn: "t2", prompt: "a new turn" }),
