@@ -256,12 +256,18 @@ test("shared engine isolates sessions and forwarded authorization while unknown 
   const health = await fetch(`http://127.0.0.1:${proxy.port}/health`).then((response) => response.json());
   assert.equal(health.status, "ok");
   assert.equal(health.instance_id, "shared-test");
+  assert.deepEqual(health.traffic, { messages: 0, routed: 0, last_message_at: null });
   assert.equal(health.api_key, undefined, "health exposes only its fixed sanitized schema");
   assert.equal(JSON.stringify(health).includes("must-never-appear"), false);
 
   await send(request({ session: "project-a", prompt: "project a" }), "Bearer account-a");
   await send(request({ session: "project-b", prompt: "project b" }), "Bearer account-b");
   await send(request({ prompt: "unknown client" }), "Bearer unknown");
+
+  const after = await fetch(`http://127.0.0.1:${proxy.port}/health`).then((response) => response.json());
+  assert.equal(after.traffic.messages, 3);
+  assert.equal(after.traffic.routed, 2);
+  assert.ok(Number.isFinite(Date.parse(after.traffic.last_message_at)));
 
   assert.deepEqual(decisions, ["project a", "project b"]);
   assert.deepEqual(seen.map((entry) => entry.authorization), [
