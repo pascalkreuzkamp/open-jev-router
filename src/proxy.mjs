@@ -225,6 +225,11 @@ export async function startProxy({
         provider: typeof payload?.provider === "string" ? payload.provider : "unavailable",
         provider_key_available: Boolean(payload?.provider_key_available),
         telemetry: Boolean(payload?.telemetry),
+        traffic: {
+          messages: traffic.messages,
+          routed: traffic.routed,
+          last_message_at: traffic.lastMessageAt,
+        },
       }));
     }
     if (onShutdown && req.method === "POST" && req.url === "/shutdown") {
