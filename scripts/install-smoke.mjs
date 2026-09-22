@@ -57,8 +57,10 @@ try {
 
   check("jev prints its usage", () => {
     const out = run("jev", ["--help"]);
-    if (!/jev stats/.test(out) || !/jev routes/.test(out)) throw new Error(`unexpected help output:\n${out}`);
-    return "stats and routes documented";
+    if (!/jev stats/.test(out) || !/jev routes/.test(out) || !/jev daemon start/.test(out)) {
+      throw new Error(`unexpected help output:\n${out}`);
+    }
+    return "stats, routes, and daemon documented";
   });
 
   check("jev stats reports no telemetry as structured data, not a crash", () => {
@@ -78,6 +80,27 @@ try {
   check("jev-explain runs without contacting a provider", () => {
     const out = run("jev-explain", []);
     return `${out.trim().split("\n").length} lines`;
+  });
+
+  check("installed daemon starts, reports healthy, and stops", () => {
+    const env = {
+      JEV_DATA_DIR: join(workspace, "daemon-data"),
+      JEV_ENABLE_TELEMETRY: "0",
+      HOME: workspace,
+      USERPROFILE: workspace,
+    };
+    let started = false;
+    try {
+      const start = JSON.parse(run("jev", ["daemon", "start", "--json"], env));
+      started = start.ok === true;
+      const status = JSON.parse(run("jev", ["daemon", "status", "--json"], env));
+      if (!started || status.state !== "running" || status.health?.status !== "ok") {
+        throw new Error(`unexpected lifecycle payload: ${JSON.stringify({ start, status })}`);
+      }
+      return `loopback port ${status.runtime.port}`;
+    } finally {
+      if (started) run("jev", ["daemon", "stop", "--json"], env);
+    }
   });
 
   // A PATH holding node and nothing else: the launcher can still run, but cannot find the

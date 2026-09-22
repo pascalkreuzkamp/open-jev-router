@@ -15,21 +15,37 @@ import {
   formatRoutes,
   formatStats,
 } from "../src/ui/reports.mjs";
+import { daemonStatus, startDaemon, stopDaemon } from "../src/daemon/control.mjs";
+import { loadCredentialFiles } from "../src/credentials.mjs";
 
 const HELP = `Usage:
   jev stats [--session current|<id>] [--project <path>] [--json]
   jev routes [--session current|<id>] [--json]
+  jev daemon start [--json]
+  jev daemon status [--json]
+  jev daemon stop [--json]
 
-Read local telemetry only. These commands never contact Jev or an upstream model.
-Claude token counts describe subscription usage; routing cost is actual Jev-provider cost.`;
+Stats and routes read local telemetry only and never contact Jev or an upstream model.
+Daemon mode runs the same routing engine as jev-claude on a private loopback port. Claude
+token counts describe subscription usage; routing cost is actual Jev-provider cost.`;
 
 export function parseArgs(argv) {
   const [command, ...rest] = argv;
   if (!command || command === "help" || command === "--help" || command === "-h") {
     return { help: true };
   }
-  if (!new Set(["stats", "routes"]).has(command)) {
+  if (!new Set(["stats", "routes", "daemon"]).has(command)) {
     return { error: `unknown command: ${command}` };
+  }
+  if (command === "daemon") {
+    const [action, ...options] = rest;
+    if (!new Set(["start", "status", "stop"]).has(action)) {
+      return { error: "daemon requires start, status, or stop" };
+    }
+    if (options.some((option) => option !== "--json")) {
+      return { error: `unknown option: ${options.find((option) => option !== "--json")}` };
+    }
+    return { command, action, json: options.includes("--json") };
   }
   const options = { command, session: "current", project: null, json: false };
   for (let index = 0; index < rest.length; index++) {
@@ -56,10 +72,11 @@ const failure = (code, message, details = {}) => ({
   ...details,
 });
 
-export function run(argv, { env = process.env, cwd = process.cwd() } = {}) {
+export async function run(argv, { env = process.env, cwd = process.cwd() } = {}) {
   const args = parseArgs(argv);
   if (args.help) return { exitCode: 0, stdout: `${HELP}\n` };
   if (args.error) return { exitCode: 2, stderr: `${args.error}\n\n${HELP}\n` };
+  if (args.command === "daemon") return runDaemon(args, env);
 
   const db = openReader({ env });
   if (!db) {
@@ -118,6 +135,69 @@ export function run(argv, { env = process.env, cwd = process.cwd() } = {}) {
   }
 }
 
+async function runDaemon(args, env) {
+  if (args.action === "start") {
+    loadCredentialFiles();
+    const result = await startDaemon({ env });
+    if (!result.ok) return daemonFailure(args, result);
+    const output = {
+      ok: true,
+      state: "running",
+      alreadyRunning: result.alreadyRunning,
+      runtime: result.runtime,
+      health: result.health,
+    };
+    return args.json
+      ? { exitCode: 0, stdout: `${JSON.stringify(output)}\n` }
+      : {
+          exitCode: 0,
+          stdout: `[jev] daemon ${result.alreadyRunning ? "already running" : "started"} at ${daemonURL(result.runtime)} (pid ${result.runtime.pid})\n`,
+        };
+  }
+  if (args.action === "status") {
+    const result = await daemonStatus({ env });
+    if (args.json) {
+      return { exitCode: result.state === "running" ? 0 : 1, stdout: `${JSON.stringify(result)}\n` };
+    }
+    if (result.state === "running") {
+      return {
+        exitCode: 0,
+        stdout:
+          `[jev] daemon running at ${daemonURL(result.runtime)} (pid ${result.runtime.pid})\n` +
+          `[jev] provider ${result.health.provider}; key ${result.health.provider_key_available ? "available" : "unavailable"}; telemetry ${result.health.telemetry ? "enabled" : "disabled"}\n`,
+      };
+    }
+    if (result.state === "stale") {
+      return {
+        exitCode: 1,
+        stderr: `[jev] daemon runtime state is stale (${result.reason}); no process was signalled\n`,
+      };
+    }
+    return { exitCode: 1, stderr: "[jev] daemon is not running\n" };
+  }
+  const result = await stopDaemon({ env });
+  if (!result.ok) return daemonFailure(args, result);
+  const output = { ok: true, state: "stopped", alreadyStopped: result.alreadyStopped };
+  return args.json
+    ? { exitCode: 0, stdout: `${JSON.stringify(output)}\n` }
+    : {
+        exitCode: 0,
+        stdout: `[jev] daemon ${result.alreadyStopped ? "already stopped" : "stopped"}\n`,
+      };
+}
+
+function daemonFailure(args, result) {
+  const output = { ok: false, code: result.code, message: result.message };
+  return args.json
+    ? { exitCode: 1, stdout: `${JSON.stringify(output)}\n` }
+    : { exitCode: 1, stderr: `[jev] ${result.message}\n` };
+}
+
+function daemonURL(runtime) {
+  const host = runtime.host === "::1" ? "[::1]" : runtime.host;
+  return `http://${host}:${runtime.port}`;
+}
+
 function renderSuccess(args, report, formatter) {
   return { exitCode: 0, stdout: `${args.json ? JSON.stringify(report) : formatter(report)}\n` };
 }
@@ -140,7 +220,7 @@ const invokedDirectly = (() => {
   }
 })();
 if (invokedDirectly) {
-  const result = run(process.argv.slice(2));
+  const result = await run(process.argv.slice(2));
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
   process.exitCode = result.exitCode;

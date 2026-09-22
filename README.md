@@ -9,8 +9,9 @@ interface, tools, sessions, permissions, and authentication.
 | `jev-claude` | Claude Code | Existing `claude login` | Status line |
 | `jev-codex` | OpenAI Codex | Existing `codex login` | Commentary line |
 | `jev stats` / `jev routes` | Local telemetry | None | Read-only reports |
+| `jev daemon` | Persistent Claude proxy | Forwarded per request | `/health` and status files |
 
-Both commands launch the real upstream CLI. Jev only chooses the model for a fresh user turn.
+Both launcher commands run the real upstream CLI. Jev only chooses the model for a fresh user turn.
 
 ## Quick start
 
@@ -58,6 +59,17 @@ jev-claude -p "fix the failing test"
 jev-codex resume --last
 jev-codex exec "fix the failing test"
 ```
+
+The persistent proxy has an explicit lifecycle:
+
+```bash
+jev daemon start
+jev daemon status
+jev daemon stop
+```
+
+It is infrastructure for clients that cannot be launched as a child process. `jev-claude`
+continues to start and stop its own independent proxy; it never depends on daemon availability.
 
 For a local checkout, `npm link` installs both launchers and the `jev` report command. Without
 it, run `node bin/jev-claude.mjs`, `node bin/jev-codex.mjs`, or `node bin/jev.mjs`.
@@ -198,6 +210,32 @@ Claude Code uses `ANTHROPIC_BASE_URL`; Codex uses a temporary custom provider wi
 `requires_openai_auth=true`. Claude and Codex both use `jev-router` as the
 routing sentinel.
 Any concrete model selected by the user passes through unchanged.
+
+### Persistent loopback daemon
+
+`jev daemon start` runs the same Claude routing engine on `127.0.0.1`, reusing its last port
+when available. `JEV_PROXY_PORT=<port>` requests an exact port; if it is occupied, startup
+fails instead of silently moving. The command does not install a startup service or persist
+credentials. Provider keys remain in the daemon's environment, while each Claude authorization
+header is forwarded only with the request that supplied it.
+
+Runtime metadata is stored under `JEV_DATA_DIR` (default `~/.jev-router`) in private files:
+
+```text
+runtime.json       live pid, port, start time, router version, instance id
+daemon-port.json   last successful port for stable restart
+```
+
+`runtime.json` exists only for the owning live instance. Concurrent starts converge on that
+instance; stale state and crashed starts recover without using a PID file as permission to
+signal a process. `jev daemon stop` first verifies the loopback health response, PID, and
+instance id, then asks the verified daemon to drain in-flight requests and flush telemetry.
+
+`GET /health` returns only operational fields: router version, instance identity, PID,
+provider name, whether a provider key is available, and telemetry status. No credentials or
+prompt content are returned. Shared daemon state requires a Claude session id; a client that
+does not provide reliable session identity is forwarded conservatively without creating a
+reusable route pin. This keeps simultaneous clients and projects from sharing routing state.
 
 ## Jev provider
 
@@ -398,6 +436,7 @@ numeric data is `null`, not zero. Errors are JSON objects with `ok: false`, `cod
 | `JEV_AUXILIARY_POLICY` | Claude | `passthrough` (default), `inherit`, or `fast` for Claude Code's own tool-less auxiliary calls. |
 | `JEV_ENABLE_TELEMETRY` | Claude | Records routes and usage to a local SQLite database. Off by default. |
 | `JEV_DATA_DIR` | Claude | Directory for the telemetry database; defaults to `~/.jev-router`. |
+| `JEV_PROXY_PORT` | Claude daemon | Exact loopback port for `jev daemon start`. An occupied or invalid explicit port fails startup. Unset uses the last successful port when available, then an OS-assigned port. |
 | `JEV_TELEMETRY_RETENTION_DAYS` | Claude | Days of ended sessions to keep; defaults to `90`. An invalid value falls back to the default rather than keeping data forever. |
 | `JEV_NO_STATUSLINE` | Claude | Disables the injected Claude status line. |
 | `JEV_CODEX_FAST_MODEL` | Codex | Fast model; defaults to `gpt-5.6-luna`. |

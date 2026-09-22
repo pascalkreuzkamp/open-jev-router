@@ -172,12 +172,46 @@ export function observeModel(state, current) {
 export async function startProxy({
   upstreamURL = ANTHROPIC_BASE_URL,
   route = askJev,
-  actorRegistry = new ActorRegistry(),
+  shared = false,
+  actorRegistry = new ActorRegistry({ requireSessionIdentity: shared }),
   telemetry = createTelemetry({ routerVersion: ROUTER_VERSION }),
+  host = "127.0.0.1",
+  port = 0,
+  launchMode = shared ? "daemon" : "cli",
+  projectPath = shared ? null : process.cwd(),
+  health = null,
+  instanceId = null,
+  onShutdown = null,
 } = {}) {
   const catalog = new Map();
+  if (host !== "127.0.0.1" && host !== "::1") {
+    throw new Error(`proxy host must be loopback, received ${host}`);
+  }
 
   const server = http.createServer((req, res) => {
+    if (health && req.method === "GET" && req.url === "/health") {
+      const payload = typeof health === "function" ? health() : health;
+      res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+      return res.end(JSON.stringify({
+        status: "ok",
+        router_version: ROUTER_VERSION,
+        instance_id: instanceId,
+        pid: process.pid,
+        provider: typeof payload?.provider === "string" ? payload.provider : "unavailable",
+        provider_key_available: Boolean(payload?.provider_key_available),
+        telemetry: Boolean(payload?.telemetry),
+      }));
+    }
+    if (onShutdown && req.method === "POST" && req.url === "/shutdown") {
+      if (!instanceId || req.headers["x-jev-instance-id"] !== instanceId) {
+        res.writeHead(403, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ status: "forbidden" }));
+      }
+      res.writeHead(202, { "content-type": "application/json" });
+      res.end(JSON.stringify({ status: "stopping", instance_id: instanceId }));
+      setImmediate(onShutdown);
+      return;
+    }
     // Claude Code probes the base URL before its first request.
     if (req.method === "HEAD") return res.writeHead(200).end();
 
@@ -265,8 +299,8 @@ export async function startProxy({
           if (detection.actorKey) {
             observed.sessionId = telemetry.noteSession(statusKey, {
               claudeSessionId: sessionOf(body) || null,
-              projectPath: process.cwd(),
-              launchMode: "cli",
+              projectPath,
+              launchMode,
             });
             observed.actorId = telemetry.noteActor(observed.sessionId, detection);
           }
@@ -586,14 +620,49 @@ export async function startProxy({
     });
   });
 
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise((resolve, reject) => {
+    const onError = (error) => reject(error);
+    server.once("error", onError);
+    server.listen(port, host, () => {
+      server.off("error", onError);
+      resolve();
+    });
+  });
+  let closePromise = null;
   return {
     port: server.address().port,
+    host,
     telemetry,
-    close: () => {
-      server.close();
-      // Bounded: a stuck writer must not delay the CLI's exit.
-      return telemetry.close().catch(() => {});
+    close: ({ timeoutMs = 2000 } = {}) => {
+      if (closePromise) return closePromise;
+      closePromise = (async () => {
+        await new Promise((resolve) => {
+          let done = false;
+          let timer = null;
+          let idleCloser = null;
+          const finish = () => {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+            clearInterval(idleCloser);
+            resolve();
+          };
+          timer = setTimeout(() => {
+            server.closeAllConnections?.();
+            finish();
+          }, timeoutMs);
+          timer.unref?.();
+          server.close(finish);
+          // A connection can become idle after close() begins. Reap it promptly so an HTTP
+          // client's keep-alive pool does not consume the entire graceful-drain budget.
+          server.closeIdleConnections?.();
+          idleCloser = setInterval(() => server.closeIdleConnections?.(), 25);
+          idleCloser.unref?.();
+        });
+        // Bounded internally: a stuck writer must not delay process exit indefinitely.
+        await telemetry.close().catch(() => {});
+      })();
+      return closePromise;
     },
   };
 }
