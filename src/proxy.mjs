@@ -20,6 +20,16 @@ import { resolveProfiles, decisionMode, profileTierOf } from "./routing/profiles
 import { selectEffectiveRoute, routingConfigFromEnv } from "./routing/select.mjs";
 import { transformClaudeRequest } from "./claude/transform.mjs";
 import { capabilitiesForCatalogModel } from "./routing/capabilities.mjs";
+import {
+  inspectClaudeRequest,
+  sessionIdOf,
+} from "./claude/adapter.mjs";
+import {
+  auxiliaryPolicy,
+  classifyClaudeRequest,
+  subagentModelPolicy,
+} from "./claude/classify.mjs";
+import { ActorRegistry } from "./routing/actors.mjs";
 
 const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 
@@ -57,22 +67,8 @@ export function sanitizeSchema(node) {
  * which are noise to a router and measurably blunt Jev's confidence, so they are removed.
  */
 export function newTurnPrompt(body) {
-  if (!Array.isArray(body?.tools) || body.tools.length === 0) return null; // auxiliary call
-  const last = body?.messages?.[body.messages.length - 1];
-  if (!last || last.role !== "user") return null;
-  let text;
-  if (typeof last.content === "string") {
-    text = last.content;
-  } else if (Array.isArray(last.content)) {
-    if (last.content.some((b) => b.type === "tool_result")) return null;
-    text = last.content
-      .filter((b) => b.type === "text")
-      .map((b) => b.text)
-      .join("\n");
-  } else {
-    return null;
-  }
-  return text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim() || null;
+  const request = inspectClaudeRequest(body);
+  return request.shape === "fresh" ? request.prompt : null;
 }
 
 /**
@@ -139,11 +135,7 @@ const modelForTier = (models, tier) => models.find((model) => model.tier === tie
  * `metadata.user_id` is a JSON string, not a plain id.
  */
 export function sessionOf(body) {
-  try {
-    return JSON.parse(body?.metadata?.user_id ?? "{}").session_id ?? "";
-  } catch {
-    return "";
-  }
+  return sessionIdOf(body);
 }
 
 export function conversationKey(body) {
@@ -174,19 +166,12 @@ export function observeModel(state, current) {
 }
 
 
-export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = askJev } = {}) {
-  // Tier routed for each conversation's turn in flight, reused by its follow-up requests and
-  // by the cache-rebuild guard, which needs to know what the prompt cache was built on.
-  const convos = new Map();
+export async function startProxy({
+  upstreamURL = ANTHROPIC_BASE_URL,
+  route = askJev,
+  actorRegistry = new ActorRegistry(),
+} = {}) {
   const catalog = new Map();
-  const stateFor = (key) => {
-    let s = convos.get(key);
-    if (!s) {
-      if (convos.size > 50) convos.delete(convos.keys().next().value);
-      convos.set(key, (s = { tier: null }));
-    }
-    return s;
-  };
 
   const server = http.createServer((req, res) => {
     // Claude Code probes the base URL before its first request.
@@ -201,98 +186,145 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
         try {
           const body = JSON.parse(out.toString());
           // Claude Code's request shape is undocumented and moves; JEV_DUMP captures it.
-          dumpRequest(sessionOf(body) || conversationKey(body), body);
+          const request = inspectClaudeRequest(body);
+          const detection = actorRegistry.detect(request);
+          const classification = classifyClaudeRequest(body, request, detection);
+          // Where a decision is filed and where a dump lands must stay stable for the user:
+          // `claude -p` sends no session id, and `jev-explain` is given the conversation key.
+          // The actor key is internal, so it only ever labels debug output.
+          const statusKey = sessionOf(body) || conversationKey(body);
+          const key = detection.actorKey ?? statusKey;
+          dumpRequest(statusKey, body);
           body.tools?.forEach((t) => sanitizeSchema(t.input_schema));
 
-          // Anything that is not the sentinel is a model the user chose, and an explicit
-          // choice beats the router. That also covers Claude Code's own cheap Haiku calls
-          // for titles and summaries, which must never be pinned up to the session's tier.
-          if (!isAuto(body.model)) {
+          if (classification === "manual_passthrough") {
             debug(`passthrough, user selected ${body.model}`);
-            // Only a real agent turn reflects the user's choice. Claude Code's own auxiliary
-            // calls carry no tools and must not flip the status line to manual mid-session.
-            if (Array.isArray(body.tools)) {
+            if (detection.actor) {
               writeStatus(sessionOf(body), { manual: true, at: Date.now() });
             }
+          } else if (classification === "auxiliary") {
+            const policy = auxiliaryPolicy();
+            let inherited = detection.actor?.pinnedRoute ?? actorRegistry.parentOf(detection)?.pinnedRoute;
+            let auxiliaryRoute = null;
+            if (policy === "inherit") auxiliaryRoute = inherited;
+            if (policy === "fast") {
+              const models = claudeModels([...catalog.values()]);
+              auxiliaryRoute = resolveProfiles({ models }).find(({ tier }) => tier === "fast") ?? null;
+            }
+            // The sentinel cannot reach Anthropic. Passthrough therefore falls back to a
+            // safe real model only when the incoming model is not already valid.
+            if (!auxiliaryRoute && isAuto(body.model)) {
+              auxiliaryRoute = inherited ?? { model: idOf("haiku"), effectiveEffort: null };
+            }
+            if (auxiliaryRoute?.model) {
+              const transformed = transformClaudeRequest(body, auxiliaryRoute, (selectedModel) =>
+                capabilitiesForCatalogModel(catalog.get(selectedModel) ?? { id: selectedModel }),
+              );
+              for (const field of Object.keys(body)) delete body[field];
+              Object.assign(body, transformed.body);
+            }
+            debug(`${key} auxiliary/${policy}, no Jev decision`);
+          } else if (classification === "unknown") {
+            // Unknown identity or shape must not overwrite any actor state. Resolve only the
+            // invalid sentinel so the request can still reach Anthropic.
+            if (isAuto(body.model)) body.model = idOf("opus");
+            debug(`${key} unknown request, preserved without routing`);
           } else {
-            const key = conversationKey(body);
-            const state = stateFor(key);
+            const actor = detection.actor;
             // What the prompt cache was built on, which is what a downgrade would discard.
-            const current = state.tier ?? "opus";
-            const prompt = newTurnPrompt(body);
+            const current = actor.pinnedRoute?.legacyTier ?? "opus";
+            const prompt = request.prompt;
             const explaining = prompt?.includes("<jev-explain>");
             let fresh = null;
-            if (prompt && !explaining) {
+            if (classification.endsWith("_fresh") && prompt && !explaining) {
               const models = claudeModels([...catalog.values()]).filter((model) =>
                 availableTiers().includes(model.tier),
               );
               const contextTokens = Math.round(JSON.stringify(body.messages).length / 4);
               const profiles = resolveProfiles({ models });
               const currentModel =
-                state.model ??
+                actor.pinnedRoute?.model ??
                 modelForTier(models, current) ??
                 profiles.find(({ tier }) => tier === "strong")?.model ??
                 profiles.find(({ tier }) => tier === "balanced")?.model ??
                 profiles[0]?.model ??
                 idOf(current);
-              const mode = decisionMode();
-              const jev = await route({
-                prompt,
-                current: currentModel,
-                contextTokens,
-                models,
-                profiles,
-                decisionMode: mode,
-              });
-              const effectiveRoute = selectEffectiveRoute({
-                recommendation: jev,
-                currentRoute:
-                  state.route ?? {
-                    model: currentModel,
-                    tier: profileTierOf(current),
-                    effectiveEffort: body.output_config?.effort ?? null,
-                  },
-                profiles,
-                contextState: { estimatedTokens: contextTokens },
-                manualState: { prompt },
-                config: { ...routingConfigFromEnv(), createdAt: Date.now() },
-              });
-              const tier = effectiveRoute?.legacyTier ?? current;
-              const model = effectiveRoute?.model ?? currentModel;
-              const reason =
-                effectiveRoute?.source === "jev"
-                  ? "jev"
-                  : effectiveRoute?.fallbackReason === "unknown_recommendation"
-                    ? "jev-unavailable+unknown-recommendation"
-                    : effectiveRoute?.fallbackReason ?? effectiveRoute?.source ?? "jev-unavailable";
-              state.route = effectiveRoute;
-              state.tier = tier;
-              state.model = model;
-              fresh = buildDecision({
-                tier,
-                model,
-                reason,
-                prompt,
-                jev,
-                route: effectiveRoute,
-                recommendedTier:
-                  profiles.find(({ id }) => id === jev?.choice)?.tier ??
-                  profileTierOf(tierOf(jev?.choice)) ??
-                  null,
-                currentModel,
-                contextTokens,
-              });
+              const inherited =
+                detection.actorType === "subagent" && subagentModelPolicy() === "inherit"
+                  ? actorRegistry.parentOf(detection)?.pinnedRoute ?? null
+                  : null;
+              const routed = await actorRegistry.decideOnce(
+                actor,
+                request.correlation.logicalTurnId ?? request.correlation.requestId,
+                async () => {
+                  const jev = inherited
+                    ? null
+                    : await route({
+                        prompt,
+                        current: currentModel,
+                        contextTokens,
+                        models,
+                        profiles,
+                        decisionMode: decisionMode(),
+                      });
+                  const effectiveRoute = inherited
+                    ? { ...inherited, source: "inherited", fallbackReason: null, createdAt: Date.now() }
+                    : selectEffectiveRoute({
+                        recommendation: jev,
+                        currentRoute:
+                          actor.pinnedRoute ?? {
+                            model: currentModel,
+                            tier: profileTierOf(current),
+                            effectiveEffort: body.output_config?.effort ?? null,
+                          },
+                        profiles,
+                        contextState: { estimatedTokens: contextTokens },
+                        manualState: { prompt },
+                        config: { ...routingConfigFromEnv(), createdAt: Date.now() },
+                      });
+                  const tier = effectiveRoute?.legacyTier ?? tierOf(effectiveRoute?.model) ?? current;
+                  const model = effectiveRoute?.model ?? currentModel;
+                  const reason = inherited
+                    ? "inherited"
+                    : effectiveRoute?.source === "jev"
+                      ? "jev"
+                      : effectiveRoute?.fallbackReason === "unknown_recommendation"
+                        ? "jev-unavailable+unknown-recommendation"
+                        : effectiveRoute?.fallbackReason ?? effectiveRoute?.source ?? "jev-unavailable";
+                  return {
+                    route: effectiveRoute,
+                    jev,
+                    decision: buildDecision({
+                      tier,
+                      model,
+                      reason,
+                      prompt,
+                      jev,
+                      route: effectiveRoute,
+                      recommendedTier:
+                        profiles.find(({ id }) => id === jev?.choice)?.tier ??
+                        profileTierOf(tierOf(jev?.choice)) ??
+                        null,
+                      currentModel,
+                      contextTokens,
+                      actor: detection,
+                      classification,
+                    }),
+                  };
+                },
+              );
+              fresh = routed.reused ? null : routed.decision;
               debug(
-                `${key} ${jev ? `${jev.ms}ms p=${jev.confidence == null ? "n/a" : jev.confidence.toFixed(2)}` : "no-jev"} ` +
-                  `${current} -> ${tier} (${reason}) ctx~${contextTokens} | prompt ${fresh.promptHash.slice(0, 12)}`,
+                `${key} ${routed.jev ? `${routed.jev.ms}ms p=${routed.jev.confidence == null ? "n/a" : routed.jev.confidence.toFixed(2)}` : "no-jev"} ` +
+                  `${current} -> ${routed.route?.legacyTier ?? tierOf(routed.route?.model) ?? current} (${routed.decision.reason}) ctx~${contextTokens} | prompt ${routed.decision.promptHash.slice(0, 12)}`,
               );
             }
             // The sentinel is not a real model, so every routed request must be rewritten,
             // including follow-ups that reuse the tier chosen for the turn.
-            const tier = state.tier ?? current;
-            const model = state.model ?? idOf(tier);
+            const tier = actor.pinnedRoute?.legacyTier ?? current;
+            const model = actor.pinnedRoute?.model ?? idOf(tier);
             debug(`${key} rewrite ${body.model} -> ${model}`);
-            const effectiveRoute = state.route ?? {
+            const effectiveRoute = actor.pinnedRoute ?? {
               model,
               effectiveEffort: body.output_config?.effort ?? null,
               normalizationNotes: [],
@@ -303,26 +335,26 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
               (selectedModel) =>
                 capabilitiesForCatalogModel(catalog.get(selectedModel) ?? { id: selectedModel }),
             );
-            if (state.route) {
+            if (actor.pinnedRoute) {
               const transformNotes = [
                 ...transformed.audit.normalizationNotes,
                 ...(transformed.audit.removedFields.length
                   ? [`removed ${transformed.audit.removedFields.join(", ")}`]
                   : []),
               ];
-              state.route = {
-                ...state.route,
+              actor.pinnedRoute = {
+                ...actor.pinnedRoute,
                 effectiveEffort: transformed.audit.effortAfter,
-                thinkingPolicy: transformed.body.thinking?.type ?? state.route.thinkingPolicy,
+                thinkingPolicy: transformed.body.thinking?.type ?? actor.pinnedRoute.thinkingPolicy,
                 normalizationNotes: [...new Set(transformNotes)],
               };
               if (fresh) {
-                fresh.effectiveEffort = state.route.effectiveEffort;
-                fresh.thinkingPolicy = state.route.thinkingPolicy;
-                fresh.normalizationNotes = state.route.normalizationNotes;
+                fresh.effectiveEffort = actor.pinnedRoute.effectiveEffort;
+                fresh.thinkingPolicy = actor.pinnedRoute.thinkingPolicy;
+                fresh.normalizationNotes = actor.pinnedRoute.normalizationNotes;
               }
             }
-            for (const key of Object.keys(body)) delete body[key];
+            for (const field of Object.keys(body)) delete body[field];
             Object.assign(body, transformed.body);
             // Publish what went out. Claude Code's UI shows the row you picked, not the tier
             // it resolved to, so the status line is the only place this is visible.
@@ -331,7 +363,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
             // key is stable for the same conversation and is already what `debug` prints, so
             // it is the identifier a user can pass to `jev-explain` for a print-mode run.
             if (fresh && !explaining) {
-              writeDecision(sessionOf(body) || key, fresh);
+              writeDecision(statusKey, fresh);
             }
           }
           out = Buffer.from(JSON.stringify(body));
