@@ -51,6 +51,7 @@ flowchart TB
     unknownPath --> forward
     pinned --> rewrite["Rewrite `jev-router` to Claude tier model ID\nStrip unsupported thinking / effort fields"]
     rewrite --> publish["Write latest tier, confidence, and reason\nto per-session temp status file"]
+    publish --> telemetry["Queue route/request events\n(JEV_ENABLE_TELEMETRY=1 only)"]
     pass --> forward
     publish --> forward["Forward request to api.anthropic.com\nPreserve Claude Code authorization headers\nstream upstream response unchanged"]
   end
@@ -62,7 +63,24 @@ flowchart TB
   end
 
   forward --> anthropic["Anthropic API"]
-  anthropic --> claude
+  anthropic --> tee
+
+  subgraph response["Response path"]
+    direction TB
+    tee["Upstream response"]
+    tee --> forwarded["Piped downstream unchanged\nbytes, headers, and status preserved\nearly upstream close is propagated"]
+    tee --> observer["Usage observer (src/telemetry/usage.mjs)\nincremental SSE parse over a copy of the bytes\nseparate decoded path for compressed bodies\ncumulative counters are never summed"]
+    observer --> writer
+  end
+
+  subgraph storage["Telemetry — src/telemetry/"]
+    direction TB
+    writer["Bounded queue -> worker thread\nbatched SQLite transactions\nnever on the response path"]
+    writer --> sqlite["~/.jev-router/telemetry.sqlite3\nPRAGMA user_version migrations, WAL\n0700 directory / 0600 files\nretention by ended session"]
+  end
+
+  telemetry --> writer
+  forwarded --> claude
 
   subgraph visibility["Routing visibility — status.mjs + jev-statusline.mjs"]
     direction TB
@@ -82,6 +100,10 @@ a newly spawned subagent task. Tool-loop continuations reuse the route pinned to
 avoiding repeated routing latency and model changes mid-task, and a subagent's route never
 replaces the main agent's pin. A concrete model chosen in Claude Code bypasses routing until the
 user selects **Jev Router** again.
+
+Telemetry is off unless `JEV_ENABLE_TELEMETRY=1`. When it is on, no SQLite call happens on the
+thread that forwards inference, and a telemetry failure disables telemetry rather than the
+router. See the README's *Usage telemetry*.
 
 Actor identity is only as good as the correlation the request carries. Claude Code is not
 documented to send actor identifiers; when none are present the proxy establishes the session's

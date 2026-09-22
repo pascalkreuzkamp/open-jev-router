@@ -124,15 +124,26 @@ if (!claude) {
   process.exit(1);
 }
 
+// Set when routing is active, so the child's exit can flush telemetry before leaving.
+let shutdownProxy = null;
+
 if (hasAnyProviderKey()) {
-  const { port, close } = await startProxy();
+  const { port, close, telemetry } = await startProxy();
+  shutdownProxy = close;
   env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${port}`;
   env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY = "1";
   Object.assign(env, autoModelEnv());
   process.on("exit", () => {
-    close();
+    // A synchronous safety net for an abrupt exit. The normal path awaits `close()` below,
+    // which also flushes telemetry; this only guarantees the saved model is restored.
     restoreSavedModel(savedModelBefore);
   });
+
+  if (telemetry?.enabled) {
+    // Retention runs once per launch, in the background. It is bounded and never blocks the
+    // session; a failure leaves existing data untouched.
+    telemetry.prune().catch(() => {});
+  }
   args.push(...statusLineArgs());
 
   const selected = selectProvider();
@@ -176,4 +187,8 @@ child.on("error", (err) => {
   process.stderr.write(`[jev] could not start Claude Code: ${err.message}\n`);
   process.exit(1);
 });
-child.on("exit", (code, signal) => process.exit(signal ? 1 : (code ?? 0)));
+child.on("exit", async (code, signal) => {
+  // Bounded: a stuck telemetry writer delays the exit by at most its own timeout.
+  await shutdownProxy?.().catch(() => {});
+  process.exit(signal ? 1 : (code ?? 0));
+});
