@@ -69,7 +69,11 @@ prompt. Prompt text is stored only if you set `JEV_STORE_PROMPTS=1`, or a scrubb
 with `JEV_STORE_PROMPT_PREVIEW=1`. An older status file written with prompt text still reads.
 
 Telemetry is **off by default** in this release (`JEV_ENABLE_TELEMETRY=1` to enable), so an
-upgrade does not begin writing a local database without being asked.
+upgrade does not begin writing a local database without being asked. This is a deliberate
+departure from the specification's recommended defaults, which suggest enabling it: a record
+of what you asked a coding assistant to do, and when, is not something that should start being
+written because you upgraded. `jev stats` and `jev routes` report no data until you opt in,
+and say so rather than showing zeroes.
 
 ## Privacy
 

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { inspectClaudeRequest } from "../../../src/claude/adapter.mjs";
-import { ActorRegistry } from "../../../src/routing/actors.mjs";
+import { ActorRegistry, RESEND_WINDOW_MS } from "../../../src/routing/actors.mjs";
 
 const TOOLS = [{ name: "Bash" }];
 
@@ -227,14 +227,85 @@ test("a failed decision releases the in-flight slot and leaves the pin untouched
   assert.equal(actor.pinnedRoute.model, "claude-sonnet-5");
 });
 
-test("an absent logical turn id yields a fresh local boundary per call", async () => {
+test("with no turn id on the wire, a repeated opening reuses the pin instead of re-deciding", async () => {
+  // Claude Code sends the opening request of a turn twice, about a second apart: once as
+  // [user, system] and again as a fuller single user message. Verified live against 2.1.278
+  // on 2026-09-22. Both classify as fresh, so minting a local turn id per call bought two
+  // routing decisions for one user turn and let the model change between them.
   const registry = new ActorRegistry();
   const { actor } = registry.detect(request({ root: "main task" }));
-  const factory = async () => ({ route: route("claude-sonnet-5"), decision: null });
+  let calls = 0;
+  const factory = async () => {
+    calls += 1;
+    return { route: route("claude-sonnet-5"), decision: null };
+  };
+
   const first = await registry.decideOnce(actor, null, factory);
-  const second = await registry.decideOnce(actor, null, factory);
+  const resend = await registry.decideOnce(actor, null, factory);
+
   assert.match(first.logicalTurnId, /^local-turn:/);
-  assert.notEqual(first.logicalTurnId, second.logicalTurnId);
+  assert.equal(first.reused, false);
+  assert.equal(resend.reused, true, "the second opening is the same turn");
+  assert.equal(resend.logicalTurnId, first.logicalTurnId);
+  assert.equal(calls, 1, "one user turn buys exactly one routing decision");
+});
+
+test("a continuation proves the turn started, so the next opening is a real new turn", async () => {
+  const registry = new ActorRegistry();
+  const { actor } = registry.detect(request({ root: "main task" }));
+  let calls = 0;
+  const factory = async () => {
+    calls += 1;
+    return { route: route("claude-sonnet-5"), decision: null };
+  };
+
+  const first = await registry.decideOnce(actor, null, factory);
+  // The turn is genuinely under way: Claude called a tool and came back.
+  registry.detect(request({ root: "main task", shape: "continuation" }));
+  const nextTurn = await registry.decideOnce(actor, null, factory);
+
+  assert.equal(nextTurn.reused, false, "routing resumes at the next genuine boundary");
+  assert.notEqual(nextTurn.logicalTurnId, first.logicalTurnId);
+  assert.equal(calls, 2);
+});
+
+test("the resend window is bounded, so a later turn is never absorbed by an old pin", async () => {
+  const registry = new ActorRegistry();
+  const { actor } = registry.detect(request({ root: "main task" }));
+  let calls = 0;
+  const factory = async () => {
+    calls += 1;
+    return { route: route("claude-sonnet-5"), decision: null };
+  };
+
+  await registry.decideOnce(actor, null, factory);
+  // A turn that used no tools leaves no continuation behind, so only the clock separates the
+  // resend from a genuine next turn.
+  actor.lastDecisionAt -= RESEND_WINDOW_MS + 1;
+  const later = await registry.decideOnce(actor, null, factory);
+
+  assert.equal(later.reused, false);
+  assert.equal(calls, 2);
+});
+
+test("an explicit wire turn id is still authoritative and unaffected by the resend window", async () => {
+  const registry = new ActorRegistry();
+  const { actor } = registry.detect(
+    request({ metadata: { session_id: "s1", actor_id: "a1", actor_type: "main" } }),
+  );
+  let calls = 0;
+  const factory = async () => {
+    calls += 1;
+    return { route: route("claude-sonnet-5"), decision: null };
+  };
+
+  await registry.decideOnce(actor, "turn-1", factory);
+  const sameTurn = await registry.decideOnce(actor, "turn-1", factory);
+  const nextTurn = await registry.decideOnce(actor, "turn-2", factory);
+
+  assert.equal(sameTurn.reused, true);
+  assert.equal(nextTurn.reused, false, "a declared new turn decides immediately, clock or not");
+  assert.equal(calls, 2);
 });
 
 test("snapshot exposes session and actor state without leaking the live objects", () => {
