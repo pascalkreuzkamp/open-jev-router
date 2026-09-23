@@ -158,6 +158,7 @@ test("confidence settings are parsed from environment", () => {
     confidenceLow: 0.2,
     confidenceHigh: 0.7,
     downgradeMaxContextTokens: 20000,
+    subagentMinTier: null,
     uncertainCeiling: "balanced",
   });
 });
@@ -166,4 +167,32 @@ test("invalid confidence settings fall back to ordered probabilities", () => {
   const config = routingConfigFromEnv({ JEV_CONFIDENCE_LOW: "0.9", JEV_CONFIDENCE_HIGH: "0.2" });
   assert.equal(config.confidenceLow, 0.45);
   assert.equal(config.confidenceHigh, 0.8);
+});
+
+test("subagent minimum tier raises a subagent route but not the main agent", () => {
+  const options = {
+    recommendation: recommendation("haiku-default", 0.98),
+    config: { decisionMode: "profiles", createdAt: 1, subagentMinTier: "balanced" },
+  };
+  const sub = select({ ...options, contextState: { estimatedTokens: 0, actorType: "subagent" } });
+  assert.equal(sub.tier, "balanced");
+  assert.equal(sub.source, "jev");
+  assert.ok(sub.normalizationNotes.includes("raised to subagent minimum tier balanced"));
+  const main = select({ ...options, contextState: { estimatedTokens: 0, actorType: "main" } });
+  assert.equal(main.tier, "fast");
+});
+
+test("subagent minimum tier leaves stronger routes and manual overrides alone", () => {
+  const config = { decisionMode: "profiles", createdAt: 1, subagentMinTier: "balanced" };
+  const contextState = { estimatedTokens: 0, actorType: "subagent" };
+  assert.equal(select({ config, contextState }).profileId, "opus-high");
+  const manual = select({ config, contextState, manualState: { prompt: "use haiku for this" } });
+  assert.equal(manual.tier, "fast");
+});
+
+test("subagent minimum tier accepts model and profile tier names from environment", () => {
+  assert.equal(routingConfigFromEnv({ JEV_SUBAGENT_MIN_TIER: "sonnet" }).subagentMinTier, "balanced");
+  assert.equal(routingConfigFromEnv({ JEV_SUBAGENT_MIN_TIER: "Strong" }).subagentMinTier, "strong");
+  assert.equal(routingConfigFromEnv({ JEV_SUBAGENT_MIN_TIER: "bogus" }).subagentMinTier, null);
+  assert.equal(routingConfigFromEnv({}).subagentMinTier, null);
 });
