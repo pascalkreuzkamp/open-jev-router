@@ -16,7 +16,7 @@ import { writeDecision, writeDecisionOutcome, writeStatus } from "./status.mjs";
 import { dumpRequest } from "./dump.mjs";
 import { buildDecision } from "./decision.mjs";
 import { redactText } from "./sanitize.mjs";
-import { resolveProfiles, decisionMode, profileTierOf } from "./routing/profiles.mjs";
+import { resolveProfiles, decisionMode, profileTierOf, profilesForActor } from "./routing/profiles.mjs";
 import { selectEffectiveRoute, routingConfigFromEnv } from "./routing/select.mjs";
 import { transformClaudeRequest } from "./claude/transform.mjs";
 import { capabilitiesForCatalogModel } from "./routing/capabilities.mjs";
@@ -389,6 +389,7 @@ export async function startProxy({
               );
               const contextTokens = Math.round(JSON.stringify(body.messages).length / 4);
               const profiles = resolveProfiles({ models });
+              const allowed = profilesForActor(profiles, detection.actorType);
               const currentModel =
                 actor.pinnedRoute?.model ??
                 modelForTier(models, current) ??
@@ -411,7 +412,7 @@ export async function startProxy({
                         current: currentModel,
                         contextTokens,
                         models,
-                        profiles,
+                        profiles: allowed.profiles,
                         decisionMode: decisionMode(),
                       });
                   const effectiveRoute = inherited
@@ -424,11 +425,13 @@ export async function startProxy({
                             tier: profileTierOf(current),
                             effectiveEffort: body.output_config?.effort ?? null,
                           },
-                        profiles,
+                        profiles: allowed.profiles,
                         contextState: {
                           estimatedTokens: contextTokens,
                           actorType: detection.actorType,
                           freshActor: !actor.pinnedRoute,
+                          restrictedProfiles: allowed.restricted,
+                          requestedEffort: body.output_config?.effort ?? null,
                           followUp: Boolean(actor.pinnedRoute) || (body.messages?.length ?? 0) > 1,
                         },
                         manualState: { prompt },

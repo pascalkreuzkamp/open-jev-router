@@ -145,13 +145,56 @@ function withEffort(profile, effort) {
   return { ...profile, id: `${legacyTierOf(profile.tier)}-${effort}${suffix}`, effort };
 }
 
-/** Pure policy boundary: recommendation in, validated EffectiveRoute out. */
-export function selectEffectiveRoute(input) {
-  const route = selectUnfloored(input);
-  const { profiles = [], contextState = {}, config = {} } = input;
-  const subagent = contextState.actorType === "subagent";
-  if (!route || !subagent || route.source === "manual") return route;
-  const enabled = profiles.filter(({ enabled }) => enabled !== false);
+const reroute = (route, profile, note, recommendation) =>
+  routeFrom(profile, {
+    source: route.source,
+    recommendation,
+    fallbackReason: route.fallbackReason,
+    notes: [...route.normalizationNotes, note],
+    createdAt: route.createdAt,
+  });
+
+// A default (null) effort is the model's own choice; rank it like "high" when comparing.
+const effortOrDefault = (effort) => effortRank(effort ?? "high");
+
+/**
+ * Keep a route inside the actor's allowed profiles. A held or inherited route can sit outside
+ * them (a subagent arrives on its parent's model): prefer the same tier at the nearest effort,
+ * then the strongest allowed profile below it, then the weakest allowed one.
+ */
+function clampToAllowed(route, enabled, recommendation) {
+  if (!enabled.length || enabled.some(({ id }) => id === route.profileId)) return route;
+  const sameTier = enabled
+    .filter(({ tier }) => tier === route.tier)
+    .sort(
+      (a, b) =>
+        Math.abs(effortOrDefault(a.effort) - effortOrDefault(route.requestedEffort)) -
+        Math.abs(effortOrDefault(b.effort) - effortOrDefault(route.requestedEffort)),
+    );
+  const byStrength = [...enabled].sort(
+    (a, b) => profileRank(a.tier) - profileRank(b.tier) || effortRank(a.effort) - effortRank(b.effort),
+  );
+  const below = byStrength.filter(({ tier }) => profileRank(tier) < profileRank(route.tier)).at(-1);
+  const target = sameTier[0] ?? below ?? byStrength[0];
+  return reroute(route, target, `kept within allowed profiles (${target.id})`, recommendation);
+}
+
+/**
+ * An explicit xhigh/max request (e.g. Claude Code's ultracode mode) is the user's choice for
+ * the main agent; routing must not quietly lower the effort that mode depends on.
+ */
+function holdRequestedEffort(route, enabled, requested, recommendation) {
+  if (!["xhigh", "max"].includes(requested)) return route;
+  if (effortOrDefault(route.requestedEffort) >= effortRank(requested)) return route;
+  const target =
+    enabled
+      .filter(({ tier, effort }) => effort === requested && profileRank(tier) >= profileRank(route.tier))
+      .sort((a, b) => profileRank(a.tier) - profileRank(b.tier))[0] ??
+    withEffort(enabled.find(({ model }) => model === route.model), requested);
+  return target ? reroute(route, target, `kept requested ${requested} effort`, recommendation) : route;
+}
+
+function subagentBounds(route, enabled, config, recommendation) {
   const cap = config.subagentMaxTier;
   const capEffort = cap ? config.subagentMaxEffort ?? null : null;
   // A default (null) effort at the cap tier counts as above an explicit effort cap: the
@@ -168,26 +211,27 @@ export function selectEffectiveRoute(input) {
         atCap.sort((a, b) => effortRank(b.effort) - effortRank(a.effort))[0];
     if (lowered) {
       const label = capEffort ? `${legacyTierOf(cap)}-${capEffort}` : `tier ${cap}`;
-      return routeFrom(lowered, {
-        source: route.source,
-        recommendation: input.recommendation,
-        fallbackReason: route.fallbackReason,
-        notes: [...route.normalizationNotes, `lowered to subagent maximum ${label}`],
-        createdAt: route.createdAt,
-      });
+      return reroute(route, lowered, `lowered to subagent maximum ${label}`, recommendation);
     }
   }
   const floor = config.subagentMinTier;
   if (!floor || profileRank(route.tier) >= profileRank(floor)) return route;
   const raised = equalOrStronger(enabled, floor, route.requestedEffort);
-  if (!raised) return route;
-  return routeFrom(raised, {
-    source: route.source,
-    recommendation: input.recommendation,
-    fallbackReason: route.fallbackReason,
-    notes: [...route.normalizationNotes, `raised to subagent minimum tier ${floor}`],
-    createdAt: route.createdAt,
-  });
+  return raised ? reroute(route, raised, `raised to subagent minimum tier ${floor}`, recommendation) : route;
+}
+
+/** Pure policy boundary: recommendation in, validated EffectiveRoute out. */
+export function selectEffectiveRoute(input) {
+  let route = selectUnfloored(input);
+  if (!route || route.source === "manual") return route;
+  const { profiles = [], contextState = {}, config = {}, recommendation } = input;
+  const enabled = profiles.filter(({ enabled }) => enabled !== false);
+  if (contextState.restrictedProfiles) route = clampToAllowed(route, enabled, recommendation);
+  if (contextState.actorType === "main") {
+    route = holdRequestedEffort(route, enabled, contextState.requestedEffort, recommendation);
+  }
+  if (contextState.actorType === "subagent") route = subagentBounds(route, enabled, config, recommendation);
+  return route;
 }
 
 function selectUnfloored({

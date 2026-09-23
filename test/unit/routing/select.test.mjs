@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { resolveProfiles } from "../../../src/routing/profiles.mjs";
+import { profilesForActor, resolveProfiles } from "../../../src/routing/profiles.mjs";
 import { routingConfigFromEnv, selectEffectiveRoute } from "../../../src/routing/select.mjs";
 
 const profiles = resolveProfiles({
@@ -148,7 +148,7 @@ test("signals mode selects the nearest supported effort without exceeding the si
     recommendation: recommendation("claude-opus-5", 0.9, { metrics: { reasoningRequired: 9 / 9 } }),
     config: { decisionMode: "signals", createdAt: 1 },
   });
-  assert.equal(xhigh.profileId, "sonnet-high", "Sonnet has no xhigh profile, so it steps down to high");
+  assert.equal(xhigh.profileId, "sonnet-xhigh", "Sonnet 5 supports xhigh, so the signal maps to it directly");
   assert.equal(max.profileId, "opus-max");
 });
 
@@ -311,4 +311,71 @@ test("subagent maximum accepts a tier with an effort and synthesizes that profil
   assert.equal(lowered.requestedEffort, "low");
   assert.ok(lowered.normalizationNotes.includes("lowered to subagent maximum opus-low"));
   assert.equal(select({ ...opts, recommendation: recommendation("sonnet-high", 0.9) }).profileId, "sonnet-high");
+});
+
+const opus55Profiles = resolveProfiles({
+  models: [
+    { id: "claude-haiku-4-5-20251001", tier: "haiku" },
+    { id: "claude-sonnet-5", tier: "sonnet" },
+    { id: "claude-opus-5-5", tier: "opus" },
+  ],
+  env: {},
+});
+
+test("the default effort ladder offers sonnet-xhigh and opus-low", () => {
+  const ids = opus55Profiles.map(({ id }) => id);
+  assert.ok(ids.includes("sonnet-xhigh"));
+  assert.ok(ids.includes("opus-low"));
+});
+
+test("per-actor profile lists filter by wildcard and bare tier, and fail open when nothing matches", () => {
+  const ids = (actor, value) =>
+    profilesForActor(opus55Profiles, actor, { JEV_MAIN_PROFILES: value, JEV_SUBAGENT_PROFILES: value }).profiles.map(({ id }) => id);
+  assert.deepEqual(ids("main", "opus-*"), ["opus-low", "opus-medium", "opus-high", "opus-xhigh", "opus-max"]);
+  assert.deepEqual(ids("subagent", "sonnet, opus-low"), ["sonnet-low", "sonnet-medium", "sonnet-high", "sonnet-xhigh", "opus-low"]);
+  assert.equal(profilesForActor(opus55Profiles, "main", { JEV_MAIN_PROFILES: "gpt-*" }).restricted, false);
+  assert.equal(profilesForActor(opus55Profiles, "main", {}).profiles.length, opus55Profiles.length);
+  assert.equal(profilesForActor(opus55Profiles, "unknown", { JEV_MAIN_PROFILES: "opus-*" }).restricted, false);
+});
+
+test("a held route outside the allowed profiles is moved to the nearest allowed one", () => {
+  const { profiles } = profilesForActor(opus55Profiles, "subagent", { JEV_SUBAGENT_PROFILES: "sonnet-*,opus-low" });
+  const route = selectEffectiveRoute({
+    recommendation: null,
+    currentRoute: { model: "claude-opus-5-5", tier: "strong", effectiveEffort: "high" },
+    profiles,
+    contextState: { estimatedTokens: 0, actorType: "subagent", freshActor: true, restrictedProfiles: true },
+    manualState: {},
+    config: { decisionMode: "profiles", createdAt: 1 },
+  });
+  assert.equal(route.profileId, "opus-low");
+  assert.equal(route.fallbackReason, "jev_unavailable");
+});
+
+test("the main agent keeps an explicit xhigh or max request, e.g. ultracode", () => {
+  const { profiles } = profilesForActor(opus55Profiles, "main", { JEV_MAIN_PROFILES: "opus-*" });
+  const base = {
+    currentRoute: { model: "claude-opus-5-5", tier: "strong", effectiveEffort: "xhigh" },
+    profiles,
+    manualState: {},
+    config: { decisionMode: "profiles", createdAt: 1 },
+  };
+  const main = { estimatedTokens: 0, actorType: "main", restrictedProfiles: true, requestedEffort: "xhigh" };
+  const kept = selectEffectiveRoute({ ...base, recommendation: recommendation("opus-medium", 0.95), contextState: main });
+  assert.equal(kept.profileId, "opus-xhigh");
+  assert.ok(kept.normalizationNotes.includes("kept requested xhigh effort"));
+  const higher = selectEffectiveRoute({ ...base, recommendation: recommendation("opus-max", 0.95), contextState: main });
+  assert.equal(higher.profileId, "opus-max");
+  const plain = selectEffectiveRoute({
+    ...base,
+    recommendation: recommendation("opus-medium", 0.95),
+    contextState: { ...main, requestedEffort: "high" },
+  });
+  assert.equal(plain.profileId, "opus-medium");
+  const sub = selectEffectiveRoute({
+    ...base,
+    recommendation: recommendation("opus-medium", 0.95),
+    contextState: { ...main, actorType: "subagent" },
+  });
+  assert.equal(sub.profileId, "opus-medium");
 });

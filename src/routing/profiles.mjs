@@ -22,8 +22,8 @@ const MODEL_ENV = {
 
 const DEFAULT_EFFORTS = {
   fast: [null],
-  balanced: ["low", "medium", "high"],
-  strong: ["medium", "high", "xhigh", "max"],
+  balanced: ["low", "medium", "high", "xhigh"],
+  strong: ["low", "medium", "high", "xhigh", "max"],
   long: ["high", "xhigh", "max"],
 };
 
@@ -95,4 +95,25 @@ export function resolveProfiles({ models = [], env = process.env, capabilityLook
 
 export function profileDescription(profile) {
   return `${profile.tier} route using ${profile.model}${profile.effort ? ` at ${profile.effort} effort` : ""}`;
+}
+
+const ACTOR_PROFILE_ENV = { main: "JEV_MAIN_PROFILES", subagent: "JEV_SUBAGENT_PROFILES" };
+
+/**
+ * The profiles one actor type may be routed to, from a comma-separated list of profile ids
+ * with `*` wildcards (`opus-*`, `sonnet-*,opus-low`); a bare tier (`sonnet`) means all of its
+ * efforts. Unset, or a list matching nothing available, leaves every profile allowed.
+ */
+export function profilesForActor(profiles, actorType, env = process.env) {
+  const raw = env[ACTOR_PROFILE_ENV[actorType]];
+  const patterns = String(raw ?? "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean)
+    .map((value) => (value.includes("-") || value.includes("*") ? value : `${value}-*`))
+    .map((value) => new RegExp(`^${value.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`));
+  if (!patterns.length) return { profiles, restricted: false };
+  const baseId = (profile) => `${legacyTierOf(profile.tier)}-${profile.effort ?? "default"}`;
+  const allowed = profiles.filter((profile) => patterns.some((pattern) => pattern.test(baseId(profile))));
+  return allowed.length ? { profiles: allowed, restricted: true } : { profiles, restricted: false };
 }
