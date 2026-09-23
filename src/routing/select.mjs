@@ -1,6 +1,6 @@
 import { detectOverride } from "../policy.mjs";
 import { THRESHOLDS, tierOf } from "../config.mjs";
-import { EFFORT_LEVELS } from "./capabilities.mjs";
+import { EFFORT_LEVELS, capabilitiesForModel } from "./capabilities.mjs";
 import { PROFILE_TIERS, legacyTierOf, profileRank, profileTierOf } from "./profiles.mjs";
 
 const effortRank = (effort) => EFFORT_LEVELS.indexOf(effort);
@@ -119,10 +119,17 @@ export function routingConfigFromEnv(env = process.env) {
     confidenceHigh = 0.8;
   }
   const holdChars = Number(env.JEV_FOLLOWUP_HOLD_CHARS);
-  const floor = String(env.JEV_SUBAGENT_MIN_TIER ?? "").trim().toLowerCase();
+  // JEV_SUBAGENT_MAX_TIER takes a tier ("sonnet") or a tier with an effort ("opus-low").
+  const [maxTier, maxEffort = null] = String(env.JEV_SUBAGENT_MAX_TIER ?? "").trim().toLowerCase().split(/[-:]/);
+  const maxSetting = EFFORT_LEVELS.includes(maxEffort) || maxEffort === null
+    ? { tier: maxTier, effort: maxEffort }
+    : { tier: "", effort: null };
+  const tierOfSetting = (value) => (PROFILE_TIERS.includes(value) ? value : profileTierOf(value));
   return {
     followUpHoldChars: env.JEV_FOLLOWUP_HOLD_CHARS != null && Number.isInteger(holdChars) && holdChars >= 0 ? holdChars : 200,
-    subagentMinTier: PROFILE_TIERS.includes(floor) ? floor : profileTierOf(floor),
+    subagentMinTier: tierOfSetting(String(env.JEV_SUBAGENT_MIN_TIER ?? "").trim().toLowerCase()),
+    subagentMaxTier: tierOfSetting(maxSetting.tier),
+    subagentMaxEffort: tierOfSetting(maxSetting.tier) ? maxSetting.effort : null,
     decisionMode: env.JEV_DECISION_MODE === "signals" ? "signals" : "profiles",
     confidenceLow,
     confidenceHigh,
@@ -131,14 +138,47 @@ export function routingConfigFromEnv(env = process.env) {
   };
 }
 
+/** A profile outside the default effort ladder (e.g. opus-low), only if the model supports it. */
+function withEffort(profile, effort) {
+  if (!profile || !capabilitiesForModel(profile.model).supportedEfforts?.includes(effort)) return null;
+  const suffix = profile.id.slice(`${legacyTierOf(profile.tier)}-${profile.effort ?? "default"}`.length);
+  return { ...profile, id: `${legacyTierOf(profile.tier)}-${effort}${suffix}`, effort };
+}
+
 /** Pure policy boundary: recommendation in, validated EffectiveRoute out. */
 export function selectEffectiveRoute(input) {
   const route = selectUnfloored(input);
   const { profiles = [], contextState = {}, config = {} } = input;
-  const floor = contextState.actorType === "subagent" ? config.subagentMinTier : null;
-  if (!route || !floor || route.source === "manual") return route;
-  if (profileRank(route.tier) >= profileRank(floor)) return route;
+  const subagent = contextState.actorType === "subagent";
+  if (!route || !subagent || route.source === "manual") return route;
   const enabled = profiles.filter(({ enabled }) => enabled !== false);
+  const cap = config.subagentMaxTier;
+  const capEffort = cap ? config.subagentMaxEffort ?? null : null;
+  // A default (null) effort at the cap tier counts as above an explicit effort cap: the
+  // model's own default is not known to be at or below it.
+  const aboveCap =
+    cap &&
+    (profileRank(route.tier) > profileRank(cap) ||
+      (capEffort && route.tier === cap && (route.requestedEffort == null || effortRank(route.requestedEffort) > effortRank(capEffort))));
+  if (aboveCap) {
+    const atCap = enabled.filter(({ tier }) => tier === cap);
+    const lowered = capEffort
+      ? atCap.find(({ effort }) => effort === capEffort) ?? withEffort(atCap[0], capEffort)
+      : atCap.find(({ effort }) => effort === "high") ??
+        atCap.sort((a, b) => effortRank(b.effort) - effortRank(a.effort))[0];
+    if (lowered) {
+      const label = capEffort ? `${legacyTierOf(cap)}-${capEffort}` : `tier ${cap}`;
+      return routeFrom(lowered, {
+        source: route.source,
+        recommendation: input.recommendation,
+        fallbackReason: route.fallbackReason,
+        notes: [...route.normalizationNotes, `lowered to subagent maximum ${label}`],
+        createdAt: route.createdAt,
+      });
+    }
+  }
+  const floor = config.subagentMinTier;
+  if (!floor || profileRank(route.tier) >= profileRank(floor)) return route;
   const raised = equalOrStronger(enabled, floor, route.requestedEffort);
   if (!raised) return route;
   return routeFrom(raised, {
@@ -233,16 +273,18 @@ function selectUnfloored({
   const confidence = recommendation?.confidence;
   const strength = compareStrength(selected, held);
   if (!Number.isFinite(confidence) || confidence < configured.low) {
-    if (strength < 0 && contextState.actorType === "subagent" && contextState.freshActor) {
-      // A new subagent has no earlier route to protect: "never downgrade" would leave it on
-      // whatever strong model it arrived with. Start it at the uncertain ceiling instead.
+    if (contextState.actorType === "subagent" && contextState.freshActor) {
+      // A new subagent has no earlier route to protect, so the model it arrived with (the
+      // parent's) is not a baseline: an unsure answer in either direction starts at the
+      // uncertain ceiling instead of holding, or "upgrading" within, that strong model.
       const ceilingTier = configured.uncertainCeiling;
-      if (profileRank(held.tier) > profileRank(ceilingTier)) {
-        const effort = selected.tier === ceilingTier ? selected.effort : "medium";
+      const above = profileRank(selected.tier) > profileRank(ceilingTier);
+      if (above || (strength < 0 && profileRank(held.tier) > profileRank(ceilingTier))) {
+        const effort = selected.tier === ceilingTier ? selected.effort : above ? "high" : "medium";
         const start =
           enabled.find(({ tier, effort: e }) => tier === ceilingTier && e === effort) ??
           equalOrStronger(enabled, ceilingTier);
-        if (start && profileRank(start.tier) < profileRank(held.tier)) {
+        if (start && profileRank(start.tier) <= profileRank(ceilingTier)) {
           return routeFrom(start, {
             ...routeOptions,
             source: "fallback",
