@@ -1,6 +1,6 @@
 import { detectOverride } from "../policy.mjs";
 import { THRESHOLDS, tierOf } from "../config.mjs";
-import { EFFORT_LEVELS } from "./capabilities.mjs";
+import { EFFORT_LEVELS, capabilitiesForModel } from "./capabilities.mjs";
 import { PROFILE_TIERS, legacyTierOf, profileRank, profileTierOf } from "./profiles.mjs";
 
 const effortRank = (effort) => EFFORT_LEVELS.indexOf(effort);
@@ -119,20 +119,30 @@ export function routingConfigFromEnv(env = process.env) {
     confidenceHigh = 0.8;
   }
   const holdChars = Number(env.JEV_FOLLOWUP_HOLD_CHARS);
-  const tierSetting = (name) => {
-    const value = String(env[name] ?? "").trim().toLowerCase();
-    return PROFILE_TIERS.includes(value) ? value : profileTierOf(value);
-  };
+  // JEV_SUBAGENT_MAX_TIER takes a tier ("sonnet") or a tier with an effort ("opus-low").
+  const [maxTier, maxEffort = null] = String(env.JEV_SUBAGENT_MAX_TIER ?? "").trim().toLowerCase().split(/[-:]/);
+  const maxSetting = EFFORT_LEVELS.includes(maxEffort) || maxEffort === null
+    ? { tier: maxTier, effort: maxEffort }
+    : { tier: "", effort: null };
+  const tierOfSetting = (value) => (PROFILE_TIERS.includes(value) ? value : profileTierOf(value));
   return {
     followUpHoldChars: env.JEV_FOLLOWUP_HOLD_CHARS != null && Number.isInteger(holdChars) && holdChars >= 0 ? holdChars : 200,
-    subagentMinTier: tierSetting("JEV_SUBAGENT_MIN_TIER"),
-    subagentMaxTier: tierSetting("JEV_SUBAGENT_MAX_TIER"),
+    subagentMinTier: tierOfSetting(String(env.JEV_SUBAGENT_MIN_TIER ?? "").trim().toLowerCase()),
+    subagentMaxTier: tierOfSetting(maxSetting.tier),
+    subagentMaxEffort: tierOfSetting(maxSetting.tier) ? maxSetting.effort : null,
     decisionMode: env.JEV_DECISION_MODE === "signals" ? "signals" : "profiles",
     confidenceLow,
     confidenceHigh,
     downgradeMaxContextTokens: THRESHOLDS.downgradeMaxContextTokens,
     uncertainCeiling: "balanced",
   };
+}
+
+/** A profile outside the default effort ladder (e.g. opus-low), only if the model supports it. */
+function withEffort(profile, effort) {
+  if (!profile || !capabilitiesForModel(profile.model).supportedEfforts?.includes(effort)) return null;
+  const suffix = profile.id.slice(`${legacyTierOf(profile.tier)}-${profile.effort ?? "default"}`.length);
+  return { ...profile, id: `${legacyTierOf(profile.tier)}-${effort}${suffix}`, effort };
 }
 
 /** Pure policy boundary: recommendation in, validated EffectiveRoute out. */
@@ -143,17 +153,26 @@ export function selectEffectiveRoute(input) {
   if (!route || !subagent || route.source === "manual") return route;
   const enabled = profiles.filter(({ enabled }) => enabled !== false);
   const cap = config.subagentMaxTier;
-  if (cap && profileRank(route.tier) > profileRank(cap)) {
+  const capEffort = cap ? config.subagentMaxEffort ?? null : null;
+  // A default (null) effort at the cap tier counts as above an explicit effort cap: the
+  // model's own default is not known to be at or below it.
+  const aboveCap =
+    cap &&
+    (profileRank(route.tier) > profileRank(cap) ||
+      (capEffort && route.tier === cap && (route.requestedEffort == null || effortRank(route.requestedEffort) > effortRank(capEffort))));
+  if (aboveCap) {
     const atCap = enabled.filter(({ tier }) => tier === cap);
-    const lowered =
-      atCap.find(({ effort }) => effort === "high") ??
-      atCap.sort((a, b) => effortRank(b.effort) - effortRank(a.effort))[0];
+    const lowered = capEffort
+      ? atCap.find(({ effort }) => effort === capEffort) ?? withEffort(atCap[0], capEffort)
+      : atCap.find(({ effort }) => effort === "high") ??
+        atCap.sort((a, b) => effortRank(b.effort) - effortRank(a.effort))[0];
     if (lowered) {
+      const label = capEffort ? `${legacyTierOf(cap)}-${capEffort}` : `tier ${cap}`;
       return routeFrom(lowered, {
         source: route.source,
         recommendation: input.recommendation,
         fallbackReason: route.fallbackReason,
-        notes: [...route.normalizationNotes, `lowered to subagent maximum tier ${cap}`],
+        notes: [...route.normalizationNotes, `lowered to subagent maximum ${label}`],
         createdAt: route.createdAt,
       });
     }

@@ -161,6 +161,7 @@ test("confidence settings are parsed from environment", () => {
     followUpHoldChars: 200,
     subagentMinTier: null,
     subagentMaxTier: null,
+    subagentMaxEffort: null,
     uncertainCeiling: "balanced",
   });
 });
@@ -287,4 +288,27 @@ test("subagent maximum tier lowers confident subagent picks but not the main age
   const manual = select({ config, contextState: sub, manualState: { prompt: "use opus for this" } });
   assert.equal(manual.tier, "strong");
   assert.equal(routingConfigFromEnv({ JEV_SUBAGENT_MAX_TIER: "sonnet" }).subagentMaxTier, "balanced");
+});
+
+test("subagent maximum accepts a tier with an effort and synthesizes that profile when supported", () => {
+  const env = routingConfigFromEnv({ JEV_SUBAGENT_MAX_TIER: "opus-low" });
+  assert.equal(env.subagentMaxTier, "strong");
+  assert.equal(env.subagentMaxEffort, "low");
+  assert.equal(routingConfigFromEnv({ JEV_SUBAGENT_MAX_TIER: "opus:turbo" }).subagentMaxTier, null);
+  const opus55 = resolveProfiles({
+    models: [
+      { id: "claude-sonnet-5", tier: "sonnet" },
+      { id: "claude-opus-5-5", tier: "opus" },
+    ],
+    env: {},
+  });
+  const config = { decisionMode: "profiles", createdAt: 1, subagentMaxTier: "strong", subagentMaxEffort: "low" };
+  const sub = { estimatedTokens: 0, actorType: "subagent", freshActor: true };
+  const opts = { profiles: opus55, config, contextState: sub, currentRoute: { model: "claude-opus-5-5", tier: "strong" } };
+  const lowered = select({ ...opts, recommendation: recommendation("opus-medium", 0.9) });
+  assert.equal(lowered.profileId, "opus-low");
+  assert.equal(lowered.model, "claude-opus-5-5");
+  assert.equal(lowered.requestedEffort, "low");
+  assert.ok(lowered.normalizationNotes.includes("lowered to subagent maximum opus-low"));
+  assert.equal(select({ ...opts, recommendation: recommendation("sonnet-high", 0.9) }).profileId, "sonnet-high");
 });
