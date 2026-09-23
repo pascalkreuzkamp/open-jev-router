@@ -158,6 +158,7 @@ test("confidence settings are parsed from environment", () => {
     confidenceLow: 0.2,
     confidenceHigh: 0.7,
     downgradeMaxContextTokens: 20000,
+    followUpHoldChars: 200,
     subagentMinTier: null,
     uncertainCeiling: "balanced",
   });
@@ -195,4 +196,62 @@ test("subagent minimum tier accepts model and profile tier names from environmen
   assert.equal(routingConfigFromEnv({ JEV_SUBAGENT_MIN_TIER: "Strong" }).subagentMinTier, "strong");
   assert.equal(routingConfigFromEnv({ JEV_SUBAGENT_MIN_TIER: "bogus" }).subagentMinTier, null);
   assert.equal(routingConfigFromEnv({}).subagentMinTier, null);
+});
+
+const opusHeld = { model: "claude-opus-5", tier: "strong", effectiveEffort: null };
+
+test("a new subagent with a low-confidence downgrade starts on balanced, not the strong model it arrived with", () => {
+  const route = select({
+    currentRoute: opusHeld,
+    recommendation: recommendation("haiku-default", 0.17),
+    contextState: { estimatedTokens: 0, actorType: "subagent", freshActor: true },
+  });
+  assert.equal(route.profileId, "sonnet-medium");
+  assert.equal(route.fallbackReason, "low_confidence_subagent_start");
+  const keepsEffort = select({
+    currentRoute: opusHeld,
+    recommendation: recommendation("sonnet-high", 0.22),
+    contextState: { estimatedTokens: 0, actorType: "subagent", freshActor: true },
+  });
+  assert.equal(keepsEffort.profileId, "sonnet-high");
+});
+
+test("low confidence still never downgrades a pinned subagent or the main agent", () => {
+  for (const contextState of [
+    { estimatedTokens: 0, actorType: "subagent", freshActor: false },
+    { estimatedTokens: 0, actorType: "main", freshActor: true },
+  ]) {
+    const route = select({ currentRoute: opusHeld, recommendation: recommendation("haiku-default", 0.17), contextState });
+    assert.equal(route.tier, "strong");
+    assert.equal(route.fallbackReason, "low_confidence_no_downgrade");
+  }
+});
+
+test("a short main-agent follow-up holds the current route instead of downgrading", () => {
+  const base = {
+    currentRoute: opusHeld,
+    recommendation: recommendation("haiku-default", 0.96),
+    contextState: { estimatedTokens: 0, actorType: "main", followUp: true },
+  };
+  const held = select({ ...base, manualState: { prompt: "ok do that." } });
+  assert.equal(held.tier, "strong");
+  assert.equal(held.fallbackReason, "short_followup_hold");
+  assert.equal(select({ ...base, manualState: { prompt: "x".repeat(201) } }).tier, "fast");
+  assert.equal(select({ ...base, contextState: { ...base.contextState, followUp: false }, manualState: { prompt: "ok" } }).tier, "fast");
+  assert.equal(select({ ...base, manualState: { prompt: "ok" }, config: { decisionMode: "profiles", createdAt: 1, followUpHoldChars: 0 } }).tier, "fast");
+});
+
+test("a short follow-up may still upgrade", () => {
+  const route = select({
+    recommendation: recommendation("opus-high", 0.9),
+    contextState: { estimatedTokens: 0, actorType: "main", followUp: true },
+    manualState: { prompt: "now fix the race" },
+  });
+  assert.equal(route.profileId, "opus-high");
+});
+
+test("follow-up hold length is parsed from environment", () => {
+  assert.equal(routingConfigFromEnv({ JEV_FOLLOWUP_HOLD_CHARS: "80" }).followUpHoldChars, 80);
+  assert.equal(routingConfigFromEnv({ JEV_FOLLOWUP_HOLD_CHARS: "0" }).followUpHoldChars, 0);
+  assert.equal(routingConfigFromEnv({ JEV_FOLLOWUP_HOLD_CHARS: "-3" }).followUpHoldChars, 200);
 });
