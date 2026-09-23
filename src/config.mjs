@@ -190,12 +190,15 @@ export const questionForModels = (models) =>
     ),
   );
 
+const PROFILE_GUIDANCE = { fast: "haiku", balanced: "sonnet", strong: "opus", long: "fable" };
+
 /** Build the preferred profile-choice question from capability-valid runtime profiles. */
 export const questionForProfiles = (profiles) =>
   choice(
     [
       "Pick the cheapest model and effort profile that can fully complete this coding request in one pass.",
       "Use higher effort within a model before escalating model tier when that is sufficient.",
+      "Judge the reasoning the work requires, not how clearly the request is written: a detailed, well-specified request spanning several files, open questions, or tests is not trivial work.",
     ],
     Object.fromEntries(
       profiles.map((profile) => [
@@ -204,6 +207,7 @@ export const questionForProfiles = (profiles) =>
           model: profile.model,
           tier: profile.tier,
           effort: profile.effort ?? "default",
+          ...GUIDANCE[PROFILE_GUIDANCE[profile.tier]],
         },
       ]),
     ),

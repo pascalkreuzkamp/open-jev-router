@@ -117,7 +117,9 @@ export function routingConfigFromEnv(env = process.env) {
     confidenceLow = 0.45;
     confidenceHigh = 0.8;
   }
+  const floor = String(env.JEV_SUBAGENT_MIN_TIER ?? "").trim().toLowerCase();
   return {
+    subagentMinTier: PROFILE_TIERS.includes(floor) ? floor : profileTierOf(floor),
     decisionMode: env.JEV_DECISION_MODE === "signals" ? "signals" : "profiles",
     confidenceLow,
     confidenceHigh,
@@ -127,7 +129,25 @@ export function routingConfigFromEnv(env = process.env) {
 }
 
 /** Pure policy boundary: recommendation in, validated EffectiveRoute out. */
-export function selectEffectiveRoute({
+export function selectEffectiveRoute(input) {
+  const route = selectUnfloored(input);
+  const { profiles = [], contextState = {}, config = {} } = input;
+  const floor = contextState.actorType === "subagent" ? config.subagentMinTier : null;
+  if (!route || !floor || route.source === "manual") return route;
+  if (profileRank(route.tier) >= profileRank(floor)) return route;
+  const enabled = profiles.filter(({ enabled }) => enabled !== false);
+  const raised = equalOrStronger(enabled, floor, route.requestedEffort);
+  if (!raised) return route;
+  return routeFrom(raised, {
+    source: route.source,
+    recommendation: input.recommendation,
+    fallbackReason: route.fallbackReason,
+    notes: [...route.normalizationNotes, `raised to subagent minimum tier ${floor}`],
+    createdAt: route.createdAt,
+  });
+}
+
+function selectUnfloored({
   recommendation,
   currentRoute,
   profiles = [],
