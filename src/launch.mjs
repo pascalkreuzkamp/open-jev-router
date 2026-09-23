@@ -2,7 +2,8 @@
 // a Claude client at a Jev proxy.
 import { accessSync, constants } from "node:fs";
 import { join } from "node:path";
-import { AUTO_MODEL } from "./config.mjs";
+import { AUTO_MODEL, AUTO_MODEL_1M } from "./config.mjs";
+import { boolEnv } from "./env.mjs";
 
 /**
  * Finds an executable on PATH. Resolving it here rather than leaning on the shell means
@@ -40,8 +41,9 @@ export const spawnArgs = (resolved, args) =>
  * them; the proxy strips what the routed model cannot accept.
  */
 export function autoModelEnv({ env = process.env, defaultToRouter = true } = {}) {
+  const auto = boolEnv("JEV_MAIN_1M", env) ? AUTO_MODEL_1M : AUTO_MODEL;
   const out = {
-    ANTHROPIC_CUSTOM_MODEL_OPTION: AUTO_MODEL,
+    ANTHROPIC_CUSTOM_MODEL_OPTION: auto,
     ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: "Jev Router",
     ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION: "Route each turn to the cheapest model that can do it",
     ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES:
@@ -52,7 +54,7 @@ export function autoModelEnv({ env = process.env, defaultToRouter = true } = {})
   };
   // ANTHROPIC_MODEL applies to the launched process only and is never written to settings,
   // so the default costs the user nothing permanent. A model they set themselves still wins.
-  if (defaultToRouter && !env.ANTHROPIC_MODEL) out.ANTHROPIC_MODEL = AUTO_MODEL;
+  if (defaultToRouter && !env.ANTHROPIC_MODEL) out.ANTHROPIC_MODEL = auto;
   return out;
 }
 

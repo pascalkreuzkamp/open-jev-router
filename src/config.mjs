@@ -32,7 +32,10 @@ export const tierSpec = (name) => TIERS.find((t) => t.name === name);
 export const AUTO_MODEL = "jev-router";
 
 /** Whether a request should be routed, or passed through as the user's own choice. */
-export const isAuto = (model) => model === AUTO_MODEL;
+export const isAuto = (model) => model === AUTO_MODEL || model === AUTO_MODEL_1M;
+
+/** The picker id used under JEV_MAIN_1M; the suffix is how Claude Code marks a 1M-window model. */
+export const AUTO_MODEL_1M = `${AUTO_MODEL}[1m]`;
 
 /** Tier name for a model string Claude Code sent, or null if we don't recognise it. */
 export const tierOf = (model) =>

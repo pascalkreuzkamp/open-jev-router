@@ -79,6 +79,27 @@ export function newTurnPrompt(body) {
  * composes the body for whatever model it thinks it is talking to, so downgrading to Haiku
  * while leaving `thinking: {type:"adaptive"}` in place is a hard 400.
  */
+export const CONTEXT_1M_BETA = "context-1m-2025-08-07";
+
+/** Estimated tokens above which a model without a 1M mode can no longer take the request. */
+export const STANDARD_CONTEXT_TOKENS = 180_000;
+
+/**
+ * Adds or removes the 1M-context beta on outgoing headers. Claude Code only sends it for a
+ * model picked with 1M, so a routed request needs it added for the main agent and removed
+ * for a model or actor that should run at the standard window.
+ */
+export function setContext1m(headers, on) {
+  const betas = String(headers["anthropic-beta"] ?? "")
+    .split(",")
+    .map((beta) => beta.trim())
+    .filter((beta) => beta && beta !== CONTEXT_1M_BETA);
+  if (on) betas.push(CONTEXT_1M_BETA);
+  if (betas.length) headers["anthropic-beta"] = betas.join(",");
+  else delete headers["anthropic-beta"];
+  return headers;
+}
+
 export function applyTier(body, tierName, model = idOf(tierName)) {
   const tier = tierSpec(tierName);
   if (!tier) return body;
@@ -246,6 +267,8 @@ export async function startProxy({
       let out = Buffer.concat(chunks);
       // A routed request that went out as Fable, kept so a refusal can be retried on Opus.
       let fableAttempt = null;
+      // Set on a routed request: whether the 1M-context beta is added (true) or removed (false).
+      let context1m = null;
       // What telemetry knows about this request. Filled in below when the request is one we
       // can attribute; left empty for anything else, which is then counted but not stored.
       const observed = {
@@ -337,7 +360,7 @@ export async function startProxy({
           }
 
           if (classification === "manual_passthrough") {
-            debug(`passthrough, user selected ${body.model}`);
+            debug(`passthrough, user selected ${body.model}, beta: ${req.headers["anthropic-beta"] ?? "none"}`);
             if (detection.actor) {
               writeStatus(sessionOf(body), {
                 manual: true,
@@ -488,6 +511,32 @@ export async function startProxy({
             }
             // The sentinel is not a real model, so every routed request must be rewritten,
             // including follow-ups that reuse the tier chosen for the turn.
+            // Haiku has no 1M mode, so a 1M planner that outgrew the standard window on Haiku
+            // would be rejected; moving up costs a cache rebuild but keeps the session working.
+            if (
+              detection.actorType === "main" &&
+              boolEnv("JEV_MAIN_1M") &&
+              actor.pinnedRoute?.legacyTier === "haiku" &&
+              JSON.stringify(body.messages ?? []).length / 4 > STANDARD_CONTEXT_TOKENS
+            ) {
+              const sonnet = resolveProfiles({ models: claudeModels([...catalog.values()]) }).filter(
+                (profile) => profile.tier === "balanced",
+              );
+              const up = sonnet.find(({ effort }) => effort === "high") ?? sonnet[0];
+              if (up) {
+                debug(`${key} ${actor.pinnedRoute.model} -> ${up.model}: context exceeds Haiku's window`);
+                actor.pinnedRoute = {
+                  ...actor.pinnedRoute,
+                  profileId: up.id,
+                  model: up.model,
+                  tier: up.tier,
+                  legacyTier: "sonnet",
+                  requestedEffort: up.effort ?? null,
+                  effectiveEffort: up.effort ?? null,
+                  normalizationNotes: [...(actor.pinnedRoute.normalizationNotes ?? []), "moved off Haiku: context exceeds its window"],
+                };
+              }
+            }
             const tier = actor.pinnedRoute?.legacyTier ?? current;
             const model = actor.pinnedRoute?.model ?? idOf(tier);
             debug(`${key} rewrite ${body.model} -> ${model}`);
@@ -527,6 +576,11 @@ export async function startProxy({
             observed.model = body.model ?? null;
             if (configuredTierOf(body.model) === "fable") fableAttempt = { actor, fresh, statusKey, explaining };
             observed.effort = body.output_config?.effort ?? null;
+            context1m =
+              detection.actorType === "main" &&
+              boolEnv("JEV_MAIN_1M") &&
+              ["opus", "sonnet"].includes(configuredTierOf(body.model));
+            debug(`${key} beta in: ${req.headers["anthropic-beta"] ?? "none"}; 1m ${context1m ? "on" : "off"}`);
             // Publish what went out. Claude Code's UI shows the row you picked, not the tier
             // it resolved to, so the status line is the only place this is visible.
             // `claude -p` omits metadata on the first request of a session, so there is no
@@ -547,6 +601,7 @@ export async function startProxy({
       const transport = target.protocol === "http:" ? http : https;
       const headers = { ...req.headers, host: target.host };
       delete headers["content-length"];
+      if (context1m != null) setContext1m(headers, context1m);
       if (req.method === "GET" && /^\/v1\/models(?:\?|$)/.test(req.url ?? "")) {
         delete headers["accept-encoding"];
       }

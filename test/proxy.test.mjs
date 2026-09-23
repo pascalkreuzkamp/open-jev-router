@@ -9,6 +9,8 @@ import {
   conversationKey,
   sessionOf,
   startProxy,
+  setContext1m,
+  CONTEXT_1M_BETA,
 } from "../src/proxy.mjs";
 
 test("only the sentinel model is routed", () => {
@@ -21,7 +23,8 @@ test("only the sentinel model is routed", () => {
 test("the sentinel is not mistaken for a real tier", () => {
   assert.equal(tierOf("jev-router"), null);
 });
-import { tierOf, isAuto } from "../src/config.mjs";
+import { tierOf, isAuto, AUTO_MODEL_1M } from "../src/config.mjs";
+import { autoModelEnv } from "../src/launch.mjs";
 import { writeDecision, writeDecisionOutcome, writeStatus, readStatus, pruneStale, STATUS_DIR } from "../src/status.mjs";
 import { mkdirSync, statSync, utimesSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -436,4 +439,88 @@ test("the same opening text in two sessions gets two keys", () => {
 test("the key survives metadata that is not JSON", () => {
   const body = { metadata: { user_id: "not-json" }, messages: [{ role: "user", content: "hi" }] };
   assert.doesNotThrow(() => conversationKey(body));
+});
+
+test("setContext1m adds the 1M beta once and removes it without touching other betas", () => {
+  const added = setContext1m({ "anthropic-beta": "claude-code-20250219, effort-2025-11-24" }, true);
+  assert.equal(added["anthropic-beta"], `claude-code-20250219,effort-2025-11-24,${CONTEXT_1M_BETA}`);
+  assert.equal(setContext1m({ ...added }, true)["anthropic-beta"], added["anthropic-beta"]);
+  assert.equal(setContext1m({ ...added }, false)["anthropic-beta"], "claude-code-20250219,effort-2025-11-24");
+  assert.equal("anthropic-beta" in setContext1m({ "anthropic-beta": CONTEXT_1M_BETA }, false), false);
+  assert.equal(setContext1m({}, true)["anthropic-beta"], CONTEXT_1M_BETA);
+});
+
+test("JEV_MAIN_1M registers the router row with the [1m] suffix, which still routes", () => {
+  assert.equal(autoModelEnv({ env: {} }).ANTHROPIC_CUSTOM_MODEL_OPTION, "jev-router");
+  const env = autoModelEnv({ env: { JEV_MAIN_1M: "1" } });
+  assert.equal(env.ANTHROPIC_CUSTOM_MODEL_OPTION, AUTO_MODEL_1M);
+  assert.equal(env.ANTHROPIC_MODEL, AUTO_MODEL_1M);
+  assert.ok(isAuto(AUTO_MODEL_1M));
+  assert.ok(isAuto("jev-router"));
+});
+
+async function oneMProxy(t, choice) {
+  const seen = [];
+  const upstream = http.createServer((req, res) => {
+    let raw = "";
+    req.on("data", (chunk) => (raw += chunk));
+    req.on("end", () => {
+      seen.push({ model: JSON.parse(raw).model, beta: req.headers["anthropic-beta"] ?? null });
+      res.setHeader("content-type", "application/json");
+      res.end('{"id":"msg_1","type":"message","model":"claude-sonnet-5"}');
+    });
+  });
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  t.after(() => upstream.close());
+  const previous = process.env.JEV_MAIN_1M;
+  process.env.JEV_MAIN_1M = "1";
+  t.after(() => {
+    if (previous === undefined) delete process.env.JEV_MAIN_1M;
+    else process.env.JEV_MAIN_1M = previous;
+  });
+  const { port, close } = await startProxy({
+    upstreamURL: `http://127.0.0.1:${upstream.address().port}`,
+    route: async () => ({ choice, confidence: 0.95, ms: 1 }),
+  });
+  t.after(close);
+  const send = (body, beta = "claude-code-20250219") =>
+    fetch(`http://127.0.0.1:${port}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "anthropic-beta": beta },
+      body: JSON.stringify(body),
+    }).then((res) => res.text());
+  return { seen, send };
+}
+
+const oneMTurn = (sid) => ({
+  model: AUTO_MODEL_1M,
+  tools: [{ name: "Bash" }],
+  metadata: { user_id: JSON.stringify({ session_id: sid }) },
+  messages: [{ role: "user", content: `plan the migration ${sid}` }],
+});
+
+test("JEV_MAIN_1M adds the 1M beta when the main agent is routed to Sonnet or Opus", async (t) => {
+  const { seen, send } = await oneMProxy(t, "claude-sonnet-5");
+  await send(oneMTurn(`onem-${process.pid}`));
+  assert.equal(seen[0].model, "claude-sonnet-5");
+  assert.equal(seen[0].beta, `claude-code-20250219,${CONTEXT_1M_BETA}`);
+});
+
+test("JEV_MAIN_1M strips the 1M beta for Haiku and moves a Haiku turn past its window to Sonnet", async (t) => {
+  const { seen, send } = await oneMProxy(t, "claude-haiku-4-5-20251001");
+  const turn = oneMTurn(`onem-haiku-${process.pid}`);
+  await send(turn, `claude-code-20250219,${CONTEXT_1M_BETA}`);
+  assert.match(seen[0].model, /haiku/);
+  assert.equal(seen[0].beta, "claude-code-20250219");
+  const big = "x".repeat(800_000);
+  await send({
+    ...turn,
+    messages: [
+      ...turn.messages,
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Bash", input: {} }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: big }] },
+    ],
+  });
+  assert.match(seen[1].model, /sonnet/);
+  assert.equal(seen[1].beta, `claude-code-20250219,${CONTEXT_1M_BETA}`);
 });
