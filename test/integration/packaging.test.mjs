@@ -64,6 +64,18 @@ test("every module the entrypoints import at runtime is in the package", () => {
   }
 });
 
+test("the dashboard server and every static asset it serves are in the package", () => {
+  for (const required of [
+    "src/dashboard/server.mjs",
+    "src/dashboard/public/index.html",
+    "src/dashboard/public/app.js",
+    "src/dashboard/public/app.css",
+    "src/dashboard/public/format.js",
+  ]) {
+    assert.ok(files.includes(required), `${required} is missing from the package`);
+  }
+});
+
 test("the runtime skill data both CLIs load is in the package", () => {
   assert.ok(files.includes(".claude/skills/jev-explain/SKILL.md"), "the Claude skill is missing");
   assert.ok(files.includes("skills/codex/jev-explain/SKILL.md"), "the Codex skill is missing");

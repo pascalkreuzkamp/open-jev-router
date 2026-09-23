@@ -23,6 +23,35 @@ const duration = (milliseconds) => {
 const routeLabel = (row) => `${row.effectiveProfile ?? row.model ?? "unknown"}`;
 const actorLabel = (row) => row.actorName ?? row.actorType ?? "unknown";
 
+/** Fresh routes rolled up by one field of the route groups, so every view shares one count. */
+function distribution(groups, field) {
+  const totals = new Map();
+  for (const group of groups) {
+    totals.set(group[field] ?? null, (totals.get(group[field] ?? null) ?? 0) + group.freshRoutes);
+  }
+  const all = sum(groups, "freshRoutes");
+  return [...totals]
+    .map(([value, freshRoutes]) => ({ [field]: value, freshRoutes, share: all ? freshRoutes / all : 0 }))
+    .sort((a, b) => b.freshRoutes - a.freshRoutes || `${a[field]}`.localeCompare(`${b[field]}`));
+}
+
+const tokenCounts = (row) => ({
+  inputTokens: nullableNumber(row.inputTokens),
+  cacheReadInputTokens: nullableNumber(row.cacheReadInputTokens),
+  cacheCreationInputTokens: nullableNumber(row.cacheCreationInputTokens),
+  outputTokens: nullableNumber(row.outputTokens),
+});
+
+function usageSection(usage) {
+  return {
+    ...tokenCounts(usage),
+    requests: number(usage.requests),
+    requestsWithUsage: number(usage.requestsWithUsage),
+    requestsMissingUsage: number(usage.requestsMissingUsage),
+    complete: Boolean(usage.complete),
+  };
+}
+
 export function buildStatsReport(summary, { selectionSource = null, now = Date.now() } = {}) {
   const groupedRoutes = new Map();
   for (const row of summary.routes) {
@@ -78,6 +107,8 @@ export function buildStatsReport(summary, { selectionSource = null, now = Date.n
       ...row,
       share: freshRoutes ? row.freshRoutes / freshRoutes : 0,
     })),
+    models: distribution(routeGroups, "model"),
+    efforts: distribution(routeGroups, "effort"),
     actors: {
       mainFresh: summary.requests
         .filter(({ classification }) => classification === "main_fresh")
@@ -89,16 +120,7 @@ export function buildStatsReport(summary, { selectionSource = null, now = Date.n
       auxiliary,
       records: summary.actors.map((row) => ({ ...row })),
     },
-    usage: {
-      inputTokens: nullableNumber(summary.usage.inputTokens),
-      cacheReadInputTokens: nullableNumber(summary.usage.cacheReadInputTokens),
-      cacheCreationInputTokens: nullableNumber(summary.usage.cacheCreationInputTokens),
-      outputTokens: nullableNumber(summary.usage.outputTokens),
-      requests: number(summary.usage.requests),
-      requestsWithUsage: number(summary.usage.requestsWithUsage),
-      requestsMissingUsage: number(summary.usage.requestsMissingUsage),
-      complete: Boolean(summary.usage.complete),
-    },
+    usage: usageSection(summary.usage),
     jev: {
       decisions: number(summary.routing.jevCalls),
       fallbacks: sum(fallbacks, "routes"),
@@ -111,6 +133,78 @@ export function buildStatsReport(summary, { selectionSource = null, now = Date.n
       costComplete: Boolean(summary.routing.costComplete),
     },
     fallbacks,
+    rewrites: (summary.rewrites ?? []).map((row) => ({ note: row.note, routes: number(row.routes) })),
+  };
+}
+
+/** Token totals plus the same totals by route profile; the groups add up to the totals. */
+export function buildUsageReport(totals, byProfile, scope) {
+  return {
+    schemaVersion: REPORT_SCHEMA_VERSION,
+    kind: "usage",
+    scope,
+    totals: usageSection(totals),
+    byProfile: byProfile.map((row) => ({
+      profile: row.profile ?? null,
+      model: row.model ?? null,
+      effort: row.effort ?? null,
+      requests: number(row.requests),
+      requestsMissingUsage: number(row.requestsMissingUsage),
+      ...tokenCounts(row),
+    })),
+  };
+}
+
+/**
+ * Actors arranged as a tree. A parent is only ever the one telemetry recorded: a subagent with
+ * no recorded parent is listed as such rather than placed under the main agent, and a parent id
+ * that no longer resolves (or a cycle) is reported as missing rather than dropped.
+ */
+export function buildActorsReport(records, scope) {
+  const actors = records.map((row) => ({
+    id: row.id,
+    actorType: row.actorType ?? null,
+    agentName: row.agentName ?? null,
+    parentActorId: row.parentActorId ?? null,
+    createdAt: nullableNumber(row.createdAt),
+    lastSeenAt: nullableNumber(row.lastSeenAt),
+    routes: number(row.routes),
+    requests: number(row.requests),
+    continuations: number(row.continuations),
+    models: row.models ? `${row.models}`.split(",").filter(Boolean) : [],
+  }));
+  const byId = new Map(actors.map((actor) => [actor.id, { ...actor, children: [] }]));
+  const roots = [];
+  const parentNotRecorded = [];
+  const parentMissing = [];
+  for (const node of byId.values()) {
+    if (node.parentActorId && byId.has(node.parentActorId)) byId.get(node.parentActorId).children.push(node);
+    else if (node.parentActorId) parentMissing.push(node);
+    else if (node.actorType === "main") roots.push(node);
+    else parentNotRecorded.push(node);
+  }
+  const placed = new Set();
+  const visit = (node) => {
+    if (placed.has(node.id)) return;
+    placed.add(node.id);
+    node.children.forEach(visit);
+  };
+  [...roots, ...parentNotRecorded, ...parentMissing].forEach(visit);
+  // Anything still unplaced sits in a parent cycle, which no root reaches. Detach it from its
+  // parent to break the cycle and report it as missing its parent.
+  for (const node of byId.values()) {
+    if (placed.has(node.id)) continue;
+    const parent = byId.get(node.parentActorId);
+    parent.children = parent.children.filter((child) => child !== node);
+    parentMissing.push(node);
+    visit(node);
+  }
+  return {
+    schemaVersion: REPORT_SCHEMA_VERSION,
+    kind: "actors",
+    scope,
+    actors,
+    tree: { roots, parentNotRecorded, parentMissing },
   };
 }
 

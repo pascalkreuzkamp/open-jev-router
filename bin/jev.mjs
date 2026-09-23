@@ -18,6 +18,7 @@ import {
 import { daemonStatus, startDaemon, stopDaemon } from "../src/daemon/control.mjs";
 import { loadCredentialFiles } from "../src/credentials.mjs";
 import { formatDoctor, runDoctor } from "../src/vscode/doctor.mjs";
+import { startDashboard } from "../src/dashboard/server.mjs";
 
 const HELP = `Usage:
   jev stats [--session current|<id>] [--project <path>] [--json]
@@ -26,19 +27,36 @@ const HELP = `Usage:
   jev daemon status [--json]
   jev daemon stop [--json]
   jev vscode doctor [--json]
+  jev dashboard [--port <n>]
 
 Stats and routes read local telemetry only and never contact Jev or an upstream model.
 Daemon mode runs the same routing engine as jev-claude on a private loopback port. The
 VS Code doctor only reads settings and suggests entries; it never writes them. Claude
-token counts describe subscription usage; routing cost is actual Jev-provider cost.`;
+token counts describe subscription usage; routing cost is actual Jev-provider cost.
+The dashboard serves a read-only view of the same telemetry on 127.0.0.1 until Ctrl+C;
+it never shows prompt content and never changes routing.`;
 
 export function parseArgs(argv) {
   const [command, ...rest] = argv;
   if (!command || command === "help" || command === "--help" || command === "-h") {
     return { help: true };
   }
-  if (!new Set(["stats", "routes", "daemon", "vscode"]).has(command)) {
+  if (!new Set(["stats", "routes", "daemon", "vscode", "dashboard"]).has(command)) {
     return { error: `unknown command: ${command}` };
+  }
+  if (command === "dashboard") {
+    let port = 0;
+    for (let index = 0; index < rest.length; index++) {
+      const arg = rest[index];
+      if (arg === "--help" || arg === "-h") return { help: true };
+      if (arg !== "--port") return { error: `unknown option: ${arg}` };
+      const value = rest[++index];
+      if (!/^\d{1,5}$/.test(value ?? "") || Number(value) > 65535) {
+        return { error: "--port requires a number from 0 to 65535" };
+      }
+      port = Number(value);
+    }
+    return { command, port };
   }
   if (command === "vscode") {
     const [action, ...options] = rest;
@@ -87,6 +105,18 @@ export async function run(argv, { env = process.env, cwd = process.cwd() } = {})
   if (args.help) return { exitCode: 0, stdout: `${HELP}\n` };
   if (args.error) return { exitCode: 2, stderr: `${args.error}\n\n${HELP}\n` };
   if (args.command === "daemon") return runDaemon(args, env);
+  if (args.command === "dashboard") {
+    try {
+      const dashboard = await startDashboard({ env, cwd, port: args.port });
+      return {
+        exitCode: 0,
+        stdout: `[jev] dashboard at ${dashboard.url} (read-only; Ctrl+C to stop)\n`,
+        dashboard,
+      };
+    } catch (error) {
+      return { exitCode: 1, stderr: `[jev] dashboard could not start: ${error.message}\n` };
+    }
+  }
   if (args.command === "vscode") {
     const report = await runDoctor({ env });
     const exitCode = report.ok ? 0 : 1;
@@ -241,4 +271,11 @@ if (invokedDirectly) {
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
   process.exitCode = result.exitCode;
+  if (result.dashboard) {
+    const stop = () => {
+      result.dashboard.close().finally(() => process.exit(0));
+    };
+    process.once("SIGINT", stop);
+    process.once("SIGTERM", stop);
+  }
 }

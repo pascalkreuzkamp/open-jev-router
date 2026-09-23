@@ -25,6 +25,7 @@ be read back against the rules that produced it.
 | Model capability matrix | `2026-09-22` | Anthropic changes which models accept which effort levels or thinking modes. |
 | Telemetry database schema | `1` (`PRAGMA user_version`) | A migration is added. Migrations are append-only; upgrading never requires deleting existing telemetry. |
 | `jev stats` / `jev routes` JSON | `schemaVersion: 1` | A field changes meaning or disappears. |
+| `jev dashboard` HTTP API | `/api/v1` (report bodies carry `schemaVersion: 1`) | An endpoint or field changes meaning or disappears; additions stay in `v1`. |
 
 A database written by a newer router is refused rather than rewritten, and the failure
 disables telemetry instead of blocking inference.
@@ -101,6 +102,9 @@ and say so rather than showing zeroes.
   `~/.jev-router` (or `JEV_DATA_DIR`), and hold no prompt text by default. Ended sessions are
   pruned after `JEV_TELEMETRY_RETENTION_DAYS` (default 90).
 - `jev stats` and `jev routes` read that local database and contact nothing.
+- `jev dashboard` binds to `127.0.0.1` only, answers only `GET`/`HEAD` from loopback `Host`/`Origin`
+  values, sends no CORS headers, opens the database read-only, and serves no prompt text,
+  prompt previews, request hashes, or credentials.
 
 ## Failure behaviour
 
