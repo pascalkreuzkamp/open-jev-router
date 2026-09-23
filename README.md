@@ -10,6 +10,7 @@ interface, tools, sessions, permissions, and authentication.
 | `jev-codex` | OpenAI Codex | Existing `codex login` | Commentary line |
 | `jev stats` / `jev routes` | Local telemetry | None | Read-only reports |
 | `jev daemon` | Persistent Claude proxy | Forwarded per request | `/health` and status files |
+| `jev dashboard` | Local browser view of telemetry | None | Read-only loopback page |
 
 Both launcher commands run the real upstream CLI. Jev only chooses the model for a fresh user turn.
 
@@ -431,10 +432,34 @@ routing cost only. Claude token counts are subscription usage; they are not an A
 subscription-billing estimate.
 
 JSON output is stdout-only and uses report `schemaVersion: 1`. A stats document has the stable
-top-level keys `schemaVersion`, `kind`, `scope`, `period`, `routes`, `actors`, `usage`, `jev`,
-and `fallbacks`; a routes document has `schemaVersion`, `kind`, `scope`, and `routes`. Unknown
+top-level keys `schemaVersion`, `kind`, `scope`, `period`, `routes`, `models`, `efforts`,
+`actors`, `usage`, `jev`, `fallbacks`, and `rewrites`; a routes document has `schemaVersion`, `kind`, `scope`, and `routes`. Unknown
 numeric data is `null`, not zero. Errors are JSON objects with `ok: false`, `code`, and
 `message`; human-readable errors go to stderr.
+
+### Local dashboard
+
+`jev dashboard` serves a read-only browser view of the same telemetry and prints its URL:
+
+```bash
+jev dashboard              # http://127.0.0.1:<random port>/
+jev dashboard --port 7788
+```
+
+It shows a session picker, fresh-route summary, model/effort/profile distributions, Claude
+token usage with cache read/creation split and completeness, the actor tree (subagents whose
+parent was not recorded, or whose parent is missing, are listed separately rather than guessed),
+paginated recent routing decisions, fallbacks, and compatibility rewrites. Every chart has a
+table with the exact numbers. The page refreshes every 5 seconds while its tab is visible and
+keeps the last good render, marked stale, when a refresh fails.
+
+The server binds to `127.0.0.1` only, accepts only `GET`/`HEAD`, rejects requests whose `Host`
+or `Origin` is not loopback, sends no CORS headers, and opens the database read-only per
+request. It serves no prompt text or credentials, and it runs independently of the daemon and
+of routing. Its JSON is versioned under `/api/v1` (`status`, `sessions`, and
+`sessions/<id>/summary|actors|routes|usage`); `summary` is the same document as
+`jev stats --session <id> --json`. Telemetry is off by default, so the page explains how to
+enable it (`JEV_ENABLE_TELEMETRY=1`) when no database exists. Stop it with Ctrl+C.
 
 ## Configuration
 

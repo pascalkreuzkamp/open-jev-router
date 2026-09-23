@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Jev Router dashboard</title>
+<link rel="stylesheet" href="/app.css">
+<script type="module" src="/app.js"></script>
+</head>
+<body>
+<header class="page-header">
+  <div>
+    <h1>Jev Router sessions</h1>
+    <p class="subtle">Local, read-only view of routing telemetry. Nothing here changes routing or contacts a provider.</p>
+  </div>
+  <div class="picker">
+    <label for="session-picker">Session</label>
+    <select id="session-picker" disabled><option value="">Loading…</option></select>
+  </div>
+</header>
+<div id="banner" class="banner" role="status" aria-live="polite" hidden></div>
+<main id="content" aria-busy="true">
+  <p id="loading" class="state">Loading telemetry…</p>
+</main>
+<footer class="page-footer subtle">
+  <p>Claude token counts describe subscription usage; no API-price equivalent is implied. Routing cost is the actual cost reported by the Jev provider.</p>
+  <p id="updated"></p>
+</footer>
+</body>
+</html>

@@ -42,7 +42,7 @@ function scope({ sessionId = null, projectPath = null } = {}, column = "session_
   return { where: "", params: [] };
 }
 
-export function listSessions(db, { limit = 25, projectPath = null } = {}) {
+export function listSessions(db, { limit = 25, offset = 0, projectPath = null } = {}) {
   return rows(
     db,
     `SELECT s.id, s.claude_session_id AS claudeSessionId, s.project_path AS projectPath,
@@ -53,10 +53,18 @@ export function listSessions(db, { limit = 25, projectPath = null } = {}) {
             (SELECT COUNT(*) FROM inference_requests q WHERE q.session_id = s.id) AS requests
        FROM sessions s
       ${projectPath ? "WHERE s.project_path = ?" : ""}
-      ORDER BY s.started_at DESC
-      LIMIT ?`,
-    projectPath ? [projectPath, limit] : [limit],
+      ORDER BY s.started_at DESC, s.id ASC
+      LIMIT ? OFFSET ?`,
+    projectPath ? [projectPath, limit, offset] : [limit, offset],
   );
+}
+
+export function countSessions(db, { projectPath = null } = {}) {
+  return row(
+    db,
+    `SELECT COUNT(*) AS total FROM sessions ${projectPath ? "WHERE project_path = ?" : ""}`,
+    projectPath ? [projectPath] : [],
+  ).total;
 }
 
 export function findSession(db, sessionId) {
@@ -190,6 +198,34 @@ export function usageByRoute(db, filter = {}) {
 }
 
 /**
+ * Tokens by effective route profile. Grouped from the request side, so a request with no route
+ * (a null `profile` row) is still counted and the groups add up exactly to `usageTotals`.
+ */
+export function usageByProfile(db, filter = {}) {
+  const { where, params } = scope(filter, "q.session_id");
+  return rows(
+    db,
+    `SELECT r.effective_profile AS profile, r.model, r.effective_effort AS effort,
+            COUNT(q.id) AS requests,
+            SUM(CASE WHEN u.id IS NULL THEN 1 ELSE 0 END) AS requestsMissingUsage,
+            SUM(u.input_tokens) AS inputTokens,
+            SUM(u.output_tokens) AS outputTokens,
+            SUM(u.cache_read_input_tokens) AS cacheReadInputTokens,
+            SUM(u.cache_creation_input_tokens) AS cacheCreationInputTokens
+       FROM inference_requests q
+       LEFT JOIN routes r ON r.id = q.route_id
+       LEFT JOIN usage_events u ON u.request_id = q.id
+       ${where}
+      GROUP BY r.effective_profile, r.model, r.effective_effort
+      ORDER BY COALESCE(SUM(u.input_tokens), 0) + COALESCE(SUM(u.cache_read_input_tokens), 0)
+               + COALESCE(SUM(u.cache_creation_input_tokens), 0)
+               + COALESCE(SUM(u.output_tokens), 0) DESC,
+               r.effective_profile ASC`,
+    params,
+  );
+}
+
+/**
  * Routing cost and latency. `jev_cost_usd` is the actual cost of the routing decision when the
  * provider reports it -- never an inference bill. Claude itself is on a subscription here, so
  * no Claude cost is computed or implied (spec §13.5).
@@ -238,8 +274,41 @@ export function fallbackCounts(db, filter = {}) {
   );
 }
 
-/** Chronological fresh decisions with actor identity and observed upstream outcome. */
+/**
+ * Compatibility rewrites: how many fresh routes carried each normalization note (an effort or
+ * thinking setting the chosen model could not take as requested). A row whose stored notes are
+ * not a valid JSON array is skipped rather than failing the whole report. The nested CASE is
+ * deliberate: `json_type` raises on malformed JSON, so it must only see validated text.
+ */
+export function rewriteCounts(db, filter = {}) {
+  const { where, params } = scope(filter, "r.session_id");
+  return rows(
+    db,
+    `SELECT n.value AS note, COUNT(DISTINCT r.id) AS routes
+       FROM routes r,
+            json_each(CASE WHEN json_valid(r.normalization_json)
+                           THEN CASE WHEN json_type(r.normalization_json) = 'array'
+                                     THEN r.normalization_json ELSE '[]' END
+                           ELSE '[]' END) n
+       ${where ? `${where} AND` : "WHERE"} r.normalization_json IS NOT NULL
+      GROUP BY n.value
+      ORDER BY routes DESC, n.value ASC`,
+    params,
+  );
+}
+
+export function countRoutes(db, filter = {}) {
+  const { where, params } = scope(filter);
+  return row(db, `SELECT COUNT(*) AS total FROM routes ${where}`, params).total;
+}
+
+/**
+ * Chronological fresh decisions with actor identity and observed upstream outcome. `limit` and
+ * `offset` page through them; `newestFirst` reverses the order for a "recent decisions" view.
+ */
 export function routeHistory(db, filter = {}) {
+  const { limit = -1, offset = 0, newestFirst = false } = filter;
+  const direction = newestFirst ? "DESC" : "ASC";
   const { where, params } = scope(filter, "r.session_id");
   return rows(
     db,
@@ -263,8 +332,9 @@ export function routeHistory(db, filter = {}) {
        LEFT JOIN inference_requests q ON q.route_id = r.id
        ${where}
       GROUP BY r.id
-      ORDER BY r.timestamp ASC, r.id ASC`,
-    params,
+      ORDER BY r.timestamp ${direction}, r.id ${direction}
+      LIMIT ? OFFSET ?`,
+    [...params, limit, offset],
   ).map(({ normalizationJson, ...entry }) => ({
     ...entry,
     normalizationNotes: parseJsonArray(normalizationJson),
@@ -295,6 +365,7 @@ export function sessionSummary(db, sessionId) {
     usageByRoute: usageByRoute(db, filter),
     routing: routingCost(db, filter),
     fallbacks: fallbackCounts(db, filter),
+    rewrites: rewriteCounts(db, filter),
   };
 }
 
@@ -313,5 +384,6 @@ export function projectSummary(db, projectPath) {
     usageByRoute: usageByRoute(db, filter),
     routing: routingCost(db, filter),
     fallbacks: fallbackCounts(db, filter),
+    rewrites: rewriteCounts(db, filter),
   };
 }

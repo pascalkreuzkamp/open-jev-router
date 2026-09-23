@@ -63,6 +63,14 @@ try {
     return "stats, routes, and daemon documented";
   });
 
+  check("jev dashboard documents itself from the installed package", () => {
+    const out = run("jev", ["dashboard", "--help"]);
+    if (!/jev dashboard \[--port <n>\]/.test(out) || !/read-only/.test(out)) {
+      throw new Error(`unexpected dashboard help output:\n${out}`);
+    }
+    return "dashboard documented";
+  });
+
   check("jev stats reports no telemetry as structured data, not a crash", () => {
     // With no database this exits 1 by design and prints a machine-readable reason; the
     // smoke test is that the installed CLI reaches that path rather than failing to load.
