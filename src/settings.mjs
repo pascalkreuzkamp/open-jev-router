@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { AUTO_MODEL } from "./config.mjs";
+import { isAuto } from "./config.mjs";
 
 export const USER_SETTINGS = join(homedir(), ".claude", "settings.json");
 
@@ -12,7 +12,7 @@ export const USER_SETTINGS = join(homedir(), ".claude", "settings.json");
 export function readSavedModel(file = USER_SETTINGS) {
   try {
     const model = JSON.parse(readFileSync(file, "utf8")).model;
-    return model === AUTO_MODEL ? undefined : model;
+    return isAuto(model) ? undefined : model;
   } catch {
     return undefined;
   }
@@ -27,7 +27,7 @@ export function readSavedModel(file = USER_SETTINGS) {
 export function restoreSavedModel(previous, file = USER_SETTINGS) {
   try {
     const settings = JSON.parse(readFileSync(file, "utf8"));
-    if (settings.model !== AUTO_MODEL) return false;
+    if (!isAuto(settings.model)) return false;
     if (previous === undefined) delete settings.model;
     else settings.model = previous;
     writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`);
