@@ -119,10 +119,14 @@ export function routingConfigFromEnv(env = process.env) {
     confidenceHigh = 0.8;
   }
   const holdChars = Number(env.JEV_FOLLOWUP_HOLD_CHARS);
-  const floor = String(env.JEV_SUBAGENT_MIN_TIER ?? "").trim().toLowerCase();
+  const tierSetting = (name) => {
+    const value = String(env[name] ?? "").trim().toLowerCase();
+    return PROFILE_TIERS.includes(value) ? value : profileTierOf(value);
+  };
   return {
     followUpHoldChars: env.JEV_FOLLOWUP_HOLD_CHARS != null && Number.isInteger(holdChars) && holdChars >= 0 ? holdChars : 200,
-    subagentMinTier: PROFILE_TIERS.includes(floor) ? floor : profileTierOf(floor),
+    subagentMinTier: tierSetting("JEV_SUBAGENT_MIN_TIER"),
+    subagentMaxTier: tierSetting("JEV_SUBAGENT_MAX_TIER"),
     decisionMode: env.JEV_DECISION_MODE === "signals" ? "signals" : "profiles",
     confidenceLow,
     confidenceHigh,
@@ -135,10 +139,27 @@ export function routingConfigFromEnv(env = process.env) {
 export function selectEffectiveRoute(input) {
   const route = selectUnfloored(input);
   const { profiles = [], contextState = {}, config = {} } = input;
-  const floor = contextState.actorType === "subagent" ? config.subagentMinTier : null;
-  if (!route || !floor || route.source === "manual") return route;
-  if (profileRank(route.tier) >= profileRank(floor)) return route;
+  const subagent = contextState.actorType === "subagent";
+  if (!route || !subagent || route.source === "manual") return route;
   const enabled = profiles.filter(({ enabled }) => enabled !== false);
+  const cap = config.subagentMaxTier;
+  if (cap && profileRank(route.tier) > profileRank(cap)) {
+    const atCap = enabled.filter(({ tier }) => tier === cap);
+    const lowered =
+      atCap.find(({ effort }) => effort === "high") ??
+      atCap.sort((a, b) => effortRank(b.effort) - effortRank(a.effort))[0];
+    if (lowered) {
+      return routeFrom(lowered, {
+        source: route.source,
+        recommendation: input.recommendation,
+        fallbackReason: route.fallbackReason,
+        notes: [...route.normalizationNotes, `lowered to subagent maximum tier ${cap}`],
+        createdAt: route.createdAt,
+      });
+    }
+  }
+  const floor = config.subagentMinTier;
+  if (!floor || profileRank(route.tier) >= profileRank(floor)) return route;
   const raised = equalOrStronger(enabled, floor, route.requestedEffort);
   if (!raised) return route;
   return routeFrom(raised, {
@@ -233,16 +254,18 @@ function selectUnfloored({
   const confidence = recommendation?.confidence;
   const strength = compareStrength(selected, held);
   if (!Number.isFinite(confidence) || confidence < configured.low) {
-    if (strength < 0 && contextState.actorType === "subagent" && contextState.freshActor) {
-      // A new subagent has no earlier route to protect: "never downgrade" would leave it on
-      // whatever strong model it arrived with. Start it at the uncertain ceiling instead.
+    if (contextState.actorType === "subagent" && contextState.freshActor) {
+      // A new subagent has no earlier route to protect, so the model it arrived with (the
+      // parent's) is not a baseline: an unsure answer in either direction starts at the
+      // uncertain ceiling instead of holding, or "upgrading" within, that strong model.
       const ceilingTier = configured.uncertainCeiling;
-      if (profileRank(held.tier) > profileRank(ceilingTier)) {
-        const effort = selected.tier === ceilingTier ? selected.effort : "medium";
+      const above = profileRank(selected.tier) > profileRank(ceilingTier);
+      if (above || (strength < 0 && profileRank(held.tier) > profileRank(ceilingTier))) {
+        const effort = selected.tier === ceilingTier ? selected.effort : above ? "high" : "medium";
         const start =
           enabled.find(({ tier, effort: e }) => tier === ceilingTier && e === effort) ??
           equalOrStronger(enabled, ceilingTier);
-        if (start && profileRank(start.tier) < profileRank(held.tier)) {
+        if (start && profileRank(start.tier) <= profileRank(ceilingTier)) {
           return routeFrom(start, {
             ...routeOptions,
             source: "fallback",

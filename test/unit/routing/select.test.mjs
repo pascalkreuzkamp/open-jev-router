@@ -160,6 +160,7 @@ test("confidence settings are parsed from environment", () => {
     downgradeMaxContextTokens: 20000,
     followUpHoldChars: 200,
     subagentMinTier: null,
+    subagentMaxTier: null,
     uncertainCeiling: "balanced",
   });
 });
@@ -254,4 +255,36 @@ test("follow-up hold length is parsed from environment", () => {
   assert.equal(routingConfigFromEnv({ JEV_FOLLOWUP_HOLD_CHARS: "80" }).followUpHoldChars, 80);
   assert.equal(routingConfigFromEnv({ JEV_FOLLOWUP_HOLD_CHARS: "0" }).followUpHoldChars, 0);
   assert.equal(routingConfigFromEnv({ JEV_FOLLOWUP_HOLD_CHARS: "-3" }).followUpHoldChars, 200);
+});
+
+test("a new subagent with a low-confidence strong pick starts on balanced high, not strong", () => {
+  const route = select({
+    currentRoute: opusHeld,
+    recommendation: recommendation("opus-medium", 0.33),
+    contextState: { estimatedTokens: 0, actorType: "subagent", freshActor: true },
+  });
+  assert.equal(route.profileId, "sonnet-high");
+  assert.equal(route.fallbackReason, "low_confidence_subagent_start");
+});
+
+test("a confident strong pick for a new subagent is kept", () => {
+  const route = select({
+    currentRoute: opusHeld,
+    recommendation: recommendation("opus-medium", 0.9),
+    contextState: { estimatedTokens: 0, actorType: "subagent", freshActor: true },
+  });
+  assert.equal(route.profileId, "opus-medium");
+});
+
+test("subagent maximum tier lowers confident subagent picks but not the main agent or overrides", () => {
+  const config = { decisionMode: "profiles", createdAt: 1, subagentMaxTier: "balanced" };
+  const sub = { estimatedTokens: 0, actorType: "subagent", freshActor: true };
+  const lowered = select({ config, contextState: sub, recommendation: recommendation("opus-medium", 0.9) });
+  assert.equal(lowered.profileId, "sonnet-high");
+  assert.ok(lowered.normalizationNotes.includes("lowered to subagent maximum tier balanced"));
+  const main = select({ config, contextState: { ...sub, actorType: "main" }, recommendation: recommendation("opus-medium", 0.9) });
+  assert.equal(main.profileId, "opus-medium");
+  const manual = select({ config, contextState: sub, manualState: { prompt: "use opus for this" } });
+  assert.equal(manual.tier, "strong");
+  assert.equal(routingConfigFromEnv({ JEV_SUBAGENT_MAX_TIER: "sonnet" }).subagentMaxTier, "balanced");
 });
