@@ -425,7 +425,12 @@ export async function startProxy({
                             effectiveEffort: body.output_config?.effort ?? null,
                           },
                         profiles,
-                        contextState: { estimatedTokens: contextTokens, actorType: detection.actorType },
+                        contextState: {
+                          estimatedTokens: contextTokens,
+                          actorType: detection.actorType,
+                          freshActor: !actor.pinnedRoute,
+                          followUp: Boolean(actor.pinnedRoute) || (body.messages?.length ?? 0) > 1,
+                        },
                         manualState: { prompt },
                         config: { ...routingConfigFromEnv(), createdAt: Date.now() },
                       });

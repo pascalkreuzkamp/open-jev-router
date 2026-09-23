@@ -12,6 +12,7 @@ function thresholds(config = {}) {
     downgradeMaxContextTokens:
       config.downgradeMaxContextTokens ?? THRESHOLDS.downgradeMaxContextTokens,
     uncertainCeiling: config.uncertainCeiling ?? "balanced",
+    followUpHoldChars: Number.isFinite(config.followUpHoldChars) ? config.followUpHoldChars : 200,
   };
 }
 
@@ -117,8 +118,10 @@ export function routingConfigFromEnv(env = process.env) {
     confidenceLow = 0.45;
     confidenceHigh = 0.8;
   }
+  const holdChars = Number(env.JEV_FOLLOWUP_HOLD_CHARS);
   const floor = String(env.JEV_SUBAGENT_MIN_TIER ?? "").trim().toLowerCase();
   return {
+    followUpHoldChars: env.JEV_FOLLOWUP_HOLD_CHARS != null && Number.isInteger(holdChars) && holdChars >= 0 ? holdChars : 200,
     subagentMinTier: PROFILE_TIERS.includes(floor) ? floor : profileTierOf(floor),
     decisionMode: env.JEV_DECISION_MODE === "signals" ? "signals" : "profiles",
     confidenceLow,
@@ -230,6 +233,25 @@ function selectUnfloored({
   const confidence = recommendation?.confidence;
   const strength = compareStrength(selected, held);
   if (!Number.isFinite(confidence) || confidence < configured.low) {
+    if (strength < 0 && contextState.actorType === "subagent" && contextState.freshActor) {
+      // A new subagent has no earlier route to protect: "never downgrade" would leave it on
+      // whatever strong model it arrived with. Start it at the uncertain ceiling instead.
+      const ceilingTier = configured.uncertainCeiling;
+      if (profileRank(held.tier) > profileRank(ceilingTier)) {
+        const effort = selected.tier === ceilingTier ? selected.effort : "medium";
+        const start =
+          enabled.find(({ tier, effort: e }) => tier === ceilingTier && e === effort) ??
+          equalOrStronger(enabled, ceilingTier);
+        if (start && profileRank(start.tier) < profileRank(held.tier)) {
+          return routeFrom(start, {
+            ...routeOptions,
+            source: "fallback",
+            recommendation,
+            fallbackReason: "low_confidence_subagent_start",
+          });
+        }
+      }
+    }
     if (strength < 0) {
       return routeFrom(held, {
         ...routeOptions,
@@ -258,6 +280,24 @@ function selectUnfloored({
     Number.isFinite(confidence) && confidence < configured.high
       ? ["medium-confidence recommendation"]
       : [];
+
+  // A short follow-up ("ok do that", "continue") in an ongoing main conversation carries its
+  // meaning in the context Jev never sees, so it must not read as a new trivial task.
+  if (
+    strength < 0 &&
+    contextState.actorType === "main" &&
+    contextState.followUp &&
+    configured.followUpHoldChars > 0 &&
+    (manualState.prompt ?? "").trim().length <= configured.followUpHoldChars
+  ) {
+    return routeFrom(held, {
+      ...routeOptions,
+      source: "fallback",
+      recommendation,
+      fallbackReason: "short_followup_hold",
+      notes: confidenceNotes,
+    });
+  }
 
   if (
     strength < 0 &&

@@ -18,6 +18,8 @@ const decision = (reason = "") => {
   if (reason.includes("low-confidence-capped")) return "low confidence; capped";
   if (reason.includes("cache-rebuild")) return "cache rebuild avoided";
   if (reason.includes("cache_preservation")) return "cache rebuild avoided";
+  if (reason.includes("low_confidence_subagent_start")) return "low confidence; new subagent started on balanced";
+  if (reason.includes("short_followup_hold")) return "short follow-up; held";
   if (reason.includes("low_confidence")) return "confidence policy applied";
   if (reason.includes("model_unavailable")) return "nearest available profile";
   if (reason.includes("unavailable")) return "nearest available tier";
